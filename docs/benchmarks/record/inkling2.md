@@ -281,3 +281,33 @@ What it decides for the drafter: sampling from the device's top-k is
 worth its own change (a third of sampled decode); the expert kernel is
 the per-row cost to cut, not the Q8_0 projections; and a verify computes
 its R rows' logits with the matmul.
+
+## Sampling from the device's top-k (2026-11-27)
+
+The same machine; nuclis at `870cec6` (before) and the same tree with
+the full distribution drawn from the readback (after), `ReleaseSafe`,
+Metal, F16 cache, context 4,096, no drafter. `bench --prompt-tokens
+prompt-512.json --max-tokens 128 --repeat 1 --warmup 0 --temperature 1
+--seed i` (the profile's options: top-k 0, top-p 1, min-p 0), eight
+interleaved pairs, seeds 1 to 8, the order alternating per pair. Another
+session shared the machine, so the numbers are provisional:
+
+| Decode tok/s | Mean | Range |
+| --- | ---: | ---: |
+| Before (sorts 200,058 logits on the host) | 20.78 | 20.68 to 21.17 |
+| After (draws from the 256-entry readback) | 31.79 | 31.66 to 31.93 |
+| Greedy, after (three runs) | 34.10 | 33.87 to 34.23 |
+
+Sampled decode is 53 % faster, 16.7 ms a token less, and 7 % below greedy
+where it was 34 % below. No token of the 1,024 the pairs generated fell
+back to the full logits; prefill is unchanged (305.9 to 308.9 tokens/s on
+both sides).
+
+**The same tokens.** `generate --json` on the same array, 128 tokens:
+seeds 1 to 5 at temperature 1 emit the identical sequence before and
+after, and so do seeds 1 and 2 at temperature 1.5 (one fallback) and 2
+(101 and 114 of 128 fell back: a hot distribution puts the draw past the
+256 candidates). Seeds 1 and 2 with `--logits`, which keeps the full
+reference path, match the readback runs. At temperature 2 decode is 21.99
+to 22.91 tokens/s after against 21.38 to 21.49 before: a fallback costs
+what the old path did.

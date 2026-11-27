@@ -174,9 +174,11 @@ pub const TopK = struct {
 
 /// Relative uncertainty allowed on `TopK.total`. The nucleus decision
 /// `retained >= top_p · total` is taken only when `retained` lies outside
-/// `total · (1 ± total_band)`; inside the band the sampler asks for the full
-/// vocabulary. `metal-check` asserts the GPU sum's error is ≤ 2e-6, so the
-/// band holds with a 5× margin (see docs/engine/sampling.md).
+/// `total · (1 ± total_band)`, and the full distribution's draw only when
+/// both ends of `u · total · (1 ± total_band)` pick the same token; otherwise
+/// the sampler asks for the full vocabulary. `metal-check` asserts the GPU
+/// sum's error is ≤ 2e-6, so the band holds with a 5× margin (see
+/// docs/engine/sampling.md).
 pub const total_band: f64 = 1e-5;
 
 pub const Sampler = struct {
@@ -206,18 +208,18 @@ pub const Sampler = struct {
     /// that the backend applied any active penalties before the readback
     /// (`TopK.penalized`): sampled (`temperature > 0`) and either
     /// `1 ≤ top_k ≤ capacity` (the retained set is inside the readback, always
-    /// exact) or `top_k = 0` with a nucleus (`top_p < 1`, guarded by `total`)
-    /// or a `min_p` filter (its survivors are a prefix of the readback unless
-    /// all of it survives, in which case the sampler defers). `top_k >
-    /// capacity` and the full distribution (`top_k = 0, top_p = 1, min_p = 0`)
-    /// need every logit and are not eligible. A caller that cannot apply the
+    /// exact) or `top_k = 0`: a `min_p` filter (its survivors are a prefix of
+    /// the readback unless all of it survives, in which case the sampler
+    /// defers), a nucleus (`top_p < 1`, guarded by `total`), or the full
+    /// distribution (`top_p = 1`, a draw inside the readback's mass, guarded
+    /// by `total`; see `drawFull`). `top_k > capacity` needs a sum the
+    /// readback lacks and is not eligible. A caller that cannot apply the
     /// penalties on the device must not use the readback; `selectFrom`
     /// enforces that through `TopK.penalized`.
     pub fn gpuEligible(self: *const Sampler) bool {
         const o = self.options;
         if (o.temperature == 0) return false;
-        if (o.top_k >= 1 and o.top_k <= TopK.capacity) return true;
-        return o.top_k == 0 and (o.top_p < 1 or o.min_p > 0);
+        return o.top_k <= TopK.capacity;
     }
 
     /// The argmax of `logits` penalized against `history`, each penalized
@@ -325,8 +327,41 @@ pub const Sampler = struct {
             if (retained.survivors.len == candidates.len) return null;
             return self.finish(retained.survivors, retained.sum, 0, true);
         }
-        if (o.top_p >= 1) return null;
+        if (o.top_p >= 1) return self.drawFull(candidates, top.total);
         return self.finish(candidates, top.total, total_band, false);
+    }
+
+    /// The full distribution (`top_k = 0, top_p = 1, min_p = 0`) drawn from
+    /// exponentiated readback `candidates`: `select` draws `u · S` with `S`
+    /// the exact sum over the vocabulary and walks it down the sorted
+    /// weights. `S` is known only as `total · (1 ± total_band)`, and the walk
+    /// is monotone in the draw, so the token is decided when the walks of
+    /// both ends of the draw's interval stop on the same candidate and the
+    /// mass before it is below `S`'s lower end (the reference walk then
+    /// reaches it). Otherwise null, with the RNG untouched.
+    fn drawFull(self: *Sampler, candidates: []const Candidate, total: f64) ?u32 {
+        if (!std.math.isFinite(total) or total <= 0) return null;
+        const low_sum = total * (1 - total_band);
+        var rng = self.rng;
+        const u = rng.random().float(f64);
+        const chosen = walk(candidates, u * low_sum) orelse return null;
+        if (walk(candidates, u * (total * (1 + total_band))) != chosen) return null;
+        var before: f64 = 0;
+        for (candidates[0..chosen]) |c| before += c.weight;
+        if (before >= low_sum) return null;
+        self.rng = rng;
+        return candidates[chosen].id;
+    }
+
+    /// The index `finish`'s draw loop stops at for `draw`, or null when the
+    /// draw runs past `candidates`.
+    fn walk(candidates: []const Candidate, draw: f64) ?usize {
+        var rest = draw;
+        for (candidates, 0..) |c, i| {
+            if (rest < c.weight) return i;
+            rest -= c.weight;
+        }
+        return null;
     }
 
     /// `selectFrom` against a *live* history: when the readback was taken
@@ -734,6 +769,7 @@ test "GPU top-k readback reproduces the reference sampler or defers" {
     var fallbacks: usize = 0;
     var decided: usize = 0;
     var min_p_decided: usize = 0;
+    var full_decided: usize = 0;
     var exact_path_fallbacks: usize = 0;
     for (0..20) |vector| {
         // Peakedness varies per vector so nucleus sizes range from one token to hundreds.
@@ -756,6 +792,7 @@ test "GPU top-k readback reproduces the reference sampler or defers" {
                 if (eligible and (try gpu.selectFrom(&top, scratch_top)) != null) {
                     decided += 1;
                     if (top_k == 0 and top_p == 1 and min_p > 0) min_p_decided += 1;
+                    if (top_k == 0 and top_p == 1 and min_p == 0) full_decided += 1;
                 }
                 try std.testing.expectEqual(expected, token);
                 // Ineligible options must always defer.
@@ -765,10 +802,126 @@ test "GPU top-k readback reproduces the reference sampler or defers" {
     }
     try std.testing.expect(decided > 0);
     try std.testing.expect(fallbacks > 0);
-    // `top_k = 0, top_p = 1` is decidable only through the min_p prefix.
+    // `top_k = 0, top_p = 1` decides through the min_p prefix and, without
+    // it, through a draw inside the readback's mass.
     try std.testing.expect(min_p_decided > 0);
+    try std.testing.expect(full_decided > 0);
     // 1 ≤ top_k ≤ capacity never defers: the retained set is in the readback.
     try std.testing.expectEqual(@as(usize, 0), exact_path_fallbacks);
+}
+
+test "the full distribution draws from the readback exactly or defers" {
+    // `top_k = 0, top_p = 1, min_p = 0` against `select` on the same vector:
+    // a decided token is the reference's and leaves the RNG where the
+    // reference leaves it; a deferral leaves the RNG untouched, so the
+    // caller's fallback `select` is the reference draw. Flat vectors put
+    // most of the mass past the 256 candidates, peaked ones inside them.
+    const alloc = std.testing.allocator;
+    const vocabulary = 4096;
+    const logits = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(logits);
+    const scratch = try alloc.alloc(Candidate, vocabulary);
+    defer alloc.free(scratch);
+    const scratch_top = try alloc.alloc(Candidate, vocabulary);
+    defer alloc.free(scratch_top);
+    var prng = std.Random.DefaultPrng.init(20261127);
+    const random = prng.random();
+    const temperatures = [_]f32{ 0.5, 1, 1.5 };
+    const errors = [_]f64{ 0, 4e-6, -4e-6 };
+    var decided: usize = 0;
+    var deferred: usize = 0;
+    var outside: usize = 0;
+    for (0..16) |vector| {
+        const scale: f32 = 0.5 + 9.5 * @as(f32, @floatFromInt(vector % 8)) / 7;
+        for (logits) |*l| l.* = random.floatNorm(f32) * scale;
+        if (vector % 4 == 0) logits[7] = logits[3]; // a tie among the leaders
+        for (temperatures) |temperature| for (errors) |err| {
+            const top = referenceTopK(logits, scratch, temperature, err);
+            for (0..16) |seed| {
+                const options: Options = .{ .temperature = temperature };
+                var reference = try Sampler.init(seed, options);
+                var gpu = try Sampler.init(seed, options);
+                const expected = try reference.select(logits, scratch, null);
+                if (try gpu.selectFrom(&top, scratch_top)) |token| {
+                    decided += 1;
+                    try std.testing.expectEqual(expected, token);
+                } else {
+                    deferred += 1;
+                    try std.testing.expectEqualSlices(u64, &(try Sampler.init(seed, options)).rng.s, &gpu.rng.s);
+                    if (std.mem.indexOfScalar(u32, top.ids[0..top.count], expected) == null) outside += 1;
+                    try std.testing.expectEqual(expected, try gpu.select(logits, scratch, null));
+                }
+                try std.testing.expectEqualSlices(u64, &reference.rng.s, &gpu.rng.s);
+            }
+        };
+    }
+    try std.testing.expect(decided > 0);
+    try std.testing.expect(deferred > 0);
+    // Some deferred draws land on a token the readback does not hold.
+    try std.testing.expect(outside > 0);
+}
+
+test "a full-distribution draw at a boundary defers inside the band and matches outside it" {
+    // Two leaders at logit 0 (weight 1 each) and a tail whose level sets the
+    // vocabulary's sum S, so the draw u · S sweeps across the leaders' shared
+    // boundary at 1: below it the reference draws id 0, above it id 1, and
+    // within `total_band` of it (with the readback's sum off by up to the
+    // GPU's measured error either way) the readback must defer.
+    const alloc = std.testing.allocator;
+    const vocabulary = 1024;
+    const logits = try alloc.alloc(f32, vocabulary);
+    defer alloc.free(logits);
+    const scratch = try alloc.alloc(Candidate, vocabulary);
+    defer alloc.free(scratch);
+    const scratch_top = try alloc.alloc(Candidate, vocabulary);
+    defer alloc.free(scratch_top);
+    const options: Options = .{ .temperature = 1 };
+    // A seed whose first draw u leaves room for a tail: S = 1 / u > 2.
+    var seed: u64 = 0;
+    const u = while (true) : (seed += 1) {
+        var probe = std.Random.DefaultPrng.init(seed);
+        const draw = probe.random().float(f64);
+        if (draw > 0.1 and draw < 0.45) break draw;
+    };
+    var seen: [2]usize = @splat(0);
+    var deferred: usize = 0;
+    var step: i32 = -50;
+    while (step <= 50) : (step += 1) {
+        const offset = @as(f64, @floatFromInt(step)) * 2e-6;
+        const tail = ((1 + offset) / u - 2) / @as(f64, vocabulary - 2);
+        logits[0] = 0;
+        logits[1] = 0;
+        for (logits[2..]) |*l| l.* = @floatCast(@log(tail));
+        for ([_]f64{ 0, 4e-6, -4e-6 }) |err| {
+            const top = referenceTopK(logits, scratch, options.temperature, err);
+            var reference = try Sampler.init(seed, options);
+            var gpu = try Sampler.init(seed, options);
+            const expected = try reference.select(logits, scratch, null);
+            try std.testing.expect(expected <= 1);
+            if (try gpu.selectFrom(&top, scratch_top)) |token| {
+                seen[token] += 1;
+                try std.testing.expectEqual(expected, token);
+                // Clear of the boundary by the band less the sum's error.
+                try std.testing.expect(@abs(offset) > total_band / 2);
+            } else {
+                deferred += 1;
+                try std.testing.expectEqualSlices(u64, &(try Sampler.init(seed, options)).rng.s, &gpu.rng.s);
+                try std.testing.expectEqual(expected, try gpu.select(logits, scratch, null));
+                // Only draws near the boundary defer; the tail is far.
+                try std.testing.expect(@abs(offset) < 3 * total_band);
+            }
+            try std.testing.expectEqualSlices(u64, &reference.rng.s, &gpu.rng.s);
+        }
+    }
+    try std.testing.expect(seen[0] > 0 and seen[1] > 0 and deferred > 0);
+    // A sum that is not a positive finite number defers.
+    var sampler = try Sampler.init(seed, options);
+    var top = referenceTopK(logits, scratch, options.temperature, 0);
+    for ([_]f64{ std.math.nan(f64), std.math.inf(f64), 0 }) |bad| {
+        top.total = bad;
+        try std.testing.expectEqual(@as(?u32, null), try sampler.selectFrom(&top, scratch_top));
+    }
+    try std.testing.expectEqualSlices(u64, &(try Sampler.init(seed, options)).rng.s, &sampler.rng.s);
 }
 
 test "a raw readback with a live history decides like the reference path" {
@@ -793,7 +946,8 @@ test "a raw readback with a live history decides like the reference path" {
         // Raising penalties and greedy have no bound to check against.
         .{ .temperature = 0.7, .top_k = 20, .repetition_penalty = 0.5, .presence_penalty = -1.0 },
         .{ .top_k = 20, .presence_penalty = 1.5 },
-        // A shape the readback never decides: the full distribution.
+        // A raw readback cannot decide the full distribution: the penalties
+        // move the sum over the vocabulary.
         .{ .temperature = 1, .top_p = 1, .presence_penalty = 1.5 },
     };
     var decided: usize = 0;
@@ -865,7 +1019,7 @@ test "readback validation and the uncertainty band" {
     try std.testing.expect(!greedy.gpuEligible());
     try std.testing.expect((try Sampler.init(0, .{ .temperature = 1, .top_k = 40 })).gpuEligible());
     try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1, .top_k = 300 })).gpuEligible());
-    try std.testing.expect(!(try Sampler.init(0, .{ .temperature = 1 })).gpuEligible());
+    try std.testing.expect((try Sampler.init(0, .{ .temperature = 1 })).gpuEligible());
     // min_p alone makes the full distribution eligible; penalties keep the
     // shape eligible (a device that applies them before the readback may
     // decide), while `selectFrom` still requires the `penalized` mark.

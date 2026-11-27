@@ -144,8 +144,18 @@ same token is produced from a 2 KB readback instead of 1 MB of logits:
   flat vector by `test-metal`, asserted ≤ 2e-6) and the sampler only
   accepts a threshold comparison whose margin exceeds `total_band = 1e-5`;
   a comparison inside the band, or a nucleus that runs past the 256
-  candidates, **falls back**. Not eligible (the full path runs every token):
-  `top_k > 256` and `top_k = 0` with `top_p = 1, min_p = 0`.
+  candidates, **falls back**. `top_k = 0, top_p = 1, min_p = 0` (the full
+  distribution, Inkling 2's profile): `select` draws `u · S`, with `S` the
+  sum over the vocabulary, and walks it down the sorted weights. The
+  sampler draws `u` from a copy of the RNG and walks both ends of
+  `u · total · (1 ± total_band)` down the 256 exponentiated candidates; the
+  walk only moves forward as the draw grows, so when both ends stop on the
+  same candidate and the mass before it is below `total · (1 − total_band)`
+  (so the reference walk reaches it), that candidate is `select`'s token
+  and the copy becomes the RNG. A draw past the 256 candidates or across a
+  boundary inside the band **falls back** with the RNG untouched. Not
+  eligible (the full path runs every token): `top_k > 256`, whose retained
+  sum the readback does not carry.
 - **Fallback** reads the full logits from the GPU's shared buffer
   (`Plan.readLogits`, valid until the next step) and runs `select`; the RNG
   has not advanced, so the token equals the reference path's. A non-finite

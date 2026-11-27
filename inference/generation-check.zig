@@ -1161,7 +1161,8 @@ fn verifyAtDepth(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, d
 /// The verify batch's per-row top-k readback against the same batch's full
 /// rows: two identically configured plans consume the same four tokens, one
 /// verifies into full rows and the other into the device readback. For every
-/// row and a fixed seed — with and without the history penalties — the
+/// row and a fixed seed — a nucleus with and without the history penalties,
+/// and the full distribution — the
 /// readback path must select the token the rows path's `select` selects; a
 /// row the readback cannot decide must fall back to the resident logits,
 /// which must be bit-identical to the rows plan's, and `select` on those must
@@ -1187,6 +1188,8 @@ fn verifyTopKCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.
     const options_sets = [_]inference.sampling.Options{
         .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8 },
         .{ .temperature = 0.7, .top_k = 20, .top_p = 0.8, .presence_penalty = 1.5, .repetition_penalty = 1.1 },
+        // The full distribution: a draw inside the readback's mass decides.
+        .{ .temperature = 0.7 },
     };
     try rows_plan.verify(&batch, rows, null, null, null);
     for (&tops) |*top| top.* = .{ .temperature = 0.7 };

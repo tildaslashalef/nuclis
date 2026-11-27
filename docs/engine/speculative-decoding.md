@@ -260,8 +260,11 @@ drafts before it. The sampled path decides from the `topk` readback with
 `Sampler.selectFromHistory`, applying penalties on the host to the 256
 candidates; it falls back to the resident row and `Sampler.distribution`
 (counted in `Timing.topk_fallbacks`) for `repetition_penalty < 1`,
-`presence_penalty < 0`, a penalized greedy draw, a nucleus without
-`top_k`, or a retained set that fails the bound. Ordinary decoding with
+`presence_penalty < 0`, a penalized greedy draw, a nucleus or full
+distribution without `top_k` under a penalty, a retained set that fails
+the bound, or, without penalties, any row `selectFrom` defers (a nucleus
+or a full-distribution draw past the 256 candidates or inside
+`total_band`). Ordinary decoding with
 penalties applies them on the device (`nu_penalize`, see
 [sampling.md](sampling.md)).
 
