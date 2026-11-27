@@ -45,7 +45,8 @@ make metal                                          # release build, Metal backe
 ./zig-out/bin/nuclis agent                          # the chat, with tools, in this directory
 ```
 
-`nuclis model pull --catalogue` fetches every model below (about 44 GB).
+`nuclis model pull --catalogue` fetches each kind's default below (about 29
+GB), `--extra` the rest (about 33 GB more).
 [Releases](https://github.com/tildaslashalef/nuclis/releases) ship the macOS
 binary and an x86-64 Linux build that runs on the CPU only, for the small
 models ([getting-started.md](docs/guide/getting-started.md)). `nuclis --help`
@@ -53,73 +54,87 @@ lists every command, `make help` the development targets.
 
 ## Models
 
-The catalogue is one model per job. Each entry pins its repository, commit,
-and SHA-256, so `nuclis model pull <name>` fetches exactly the bytes that
-were measured.
+The catalogue names one default per job, which the configuration starts
+from, and the extras beside it. Each entry pins its repository, commit, and
+SHA-256, so `nuclis model pull <name>` fetches exactly the bytes that were
+measured.
 
-| Kind | Name | Its job | Size |
-| --- | --- | --- | ---: |
-| chat | `qwen3.8-27b` | the flagship and the default: the agent's coder, with drafters `dflash2` (the default) and `mtp` | 16.6 GB |
-| chat | `gemma-4-e4b-qat` | the small, efficient brain: per-layer embeddings, shared KV layers; hears audio; serves the Linux CPU build | 4.2 GB |
-| decision | `laya` | fast typed answers about text, one pass per question | 0.8 GB |
-| decision | `clef-flash` | typed answers about long states and images, on Qwen's own backbone | 8.0 GB |
-| embedding | `embeddinggemma-2` | text, images, and audio into one vector space | 0.3 GB |
-| speech | `qwen3-tts-1.7b-customvoice` | nine built-in voices that take direction ("warmly, smiling") | 4.5 GB |
-| speech | `voicetut-tts` | speech model specialized in Egyptian Arabic, with Arabic–English code-switching, attribute-based voice design, and zero-shot voice cloning | 1.4 GB |
-| transcription | `nemotron-asr-0.6b` | streaming recognition with punctuation and word times | 2.6 GB |
+<!-- gen:models-by-kind -->
+**Chat**
 
-**Legacy** entries (Gemma 4 26B-A4B and 12B, Muse Glimmer, Drama 3,
-multilingual Laya, the other Qwen3-TTS sizes and modes) still pull and run by
-name. **Anything else** runs when its architecture has an adapter: finetunes,
+| Name | What it is | Size |
+| --- | --- | --- |
+| `qwen3.8-27b` (default) | the flagship: the agent's coder, with its DFlash2 and MTP drafters | 16.6 GB |
+| `gemma-4-e4b-qat` | the small, efficient brain: hears audio, runs on the Linux CPU build | 4.2 GB |
+| `inkling-2-mini` | Thinking Machines' looped mixture of experts: 24 stored blocks run as 48 | 17.6 GB |
+
+**Decision**
+
+| Name | What it is | Size |
+| --- | --- | --- |
+| `laya` (default) | fast typed answers about text, one pass per question | 0.8 GB |
+| `clef-flash` | typed answers about long states and images, on a Qwen3.5 backbone | 6.7 GB |
+
+**Embedding**
+
+| Name | What it is | Size |
+| --- | --- | --- |
+| `embeddinggemma-2` (default) | text, images, and audio into one vector space | 0.3 GB |
+
+**Speech**
+
+| Name | What it is | Size |
+| --- | --- | --- |
+| `qwen3-tts-1.7b-customvoice` (default) | nine built-in voices that take direction ("warmly, smiling") | 4.5 GB |
+| `voicetut-tts` | Egyptian Arabic speech with Arabic-English code-switching, voice design, cloning; fine-tuned from `k2-fsa/OmniVoice` | 1.4 GB |
+
+**Transcription**
+
+| Name | What it is | Size |
+| --- | --- | --- |
+| `nemotron-asr-0.6b` (default) | streaming recognition with punctuation and word times | 2.6 GB |
+
+Archived, still pulled and run by name; not offered: `gemma-4-12b-qat`, `gemma-4-26b-a4b`, `muse-glimmer-30b`, `laya-multilingual`, `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3`.
+<!-- /gen -->
+
+**Anything else** runs when its architecture has an adapter: finetunes,
 other quantizations, Prism ML's ternary Bonsai 2; `nuclis model inspect`
 judges a file before the download.
 
 ## Results
 
-Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe, Metal, F16 cache. Each
-record is measured against nuclis's own previous one; method and every
-record: [docs/benchmarks](docs/benchmarks/README.md).
-
-**Qwen3.8-27B, the capable one**, passes all eighteen of the agent's tasks,
-where the faster Gemma 4 26B-A4B passed 72–81 % of runs
-([2026-11-20](docs/benchmarks/record/agent.md#agent-long-tasks-2026-11-20)).
-Its drafter writes code at 19–20 tokens/s on a short prompt and 25–29 in an
-agent session writing files. Its weak side is prefill, 61–93 tokens/s: a task
-spends about 108 s in the model ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)).
-**Gemma 4 E4B, the small brain**, has six times the prefill and nearly five
-times the decode in a quarter of the memory: about 35 s a task.
-
-Tokens per second by prompt length, no drafter, 128 greedy tokens; the mean
-of three runs to 16,384, one run each at 32,639 and 65,407, no swap
-([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19)):
+Apple M4 Pro, 48 GiB, macOS 27.2.1, ReleaseSafe, Metal, F16 cache; each
+record is measured against nuclis's own previous one (method and every
+record: [docs/benchmarks](docs/benchmarks/README.md)). On the agent's
+eighteen tasks Qwen3.8-27B passes 18 of 18 with its DFlash2 drafter and
+Gemma 4 E4B QAT 46 of 54 runs over three seeds ([2026-11-18](docs/benchmarks/record/agent.md#where-an-agent-turn-goes-2026-11-18)),
+Inkling 2 Mini 34 of 36 over two at medium effort, in half Qwen's time a
+run ([2026-11-27](docs/benchmarks/record/agent.md#inkling-2-mini-by-effort-2026-11-27)).
+Tokens per second by prompt length, no drafter, 128 greedy tokens, the mean
+of three runs to 16,384 and one at 32,639 and 65,407 ([2026-11-19](docs/benchmarks/record/gemma4.md#sliding-layers-on-the-materialized-body-2026-11-19);
+Inkling [2026-11-27](docs/benchmarks/record/inkling2.md#the-baseline-2026-11-27)):
 
 | Decode | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Qwen3.8-27B | 11.16 | 9.23 | 9.02 | 9.17 | 8.41 |
+| Inkling 2 Mini | 25.63 | 26.40 | 21.37 | 21.10 | 18.51 |
 | Gemma 4 E4B QAT | 53.19 | 50.13 | 47.22 | 41.90 | 33.03 |
 
 | Prefill | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
 | --- | ---: | ---: | ---: | ---: | ---: |
 | Qwen3.8-27B | 93.16 | 84.02 | 77.48 | 73.17 | 61.19 |
+| Inkling 2 Mini | 282.43 | 325.98 | 274.39 | 281.95 | 232.03 |
 | Gemma 4 E4B QAT | 585.95 | 551.42 | 500.96 | 437.29 | 337.20 |
 
 **Speculative decoding**, the drafter loaded, off → on: greedy, the entry's
-draft length, the median of three pairs ([2026-11-20](docs/benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)):
+draft length, the median of three pairs; Qwen's DFlash2 also reaches 11.73 →
+19.30 (1.71×) on a short code prompt with thinking sampling and 9.23 →
+11.13 (1.25×) at 65,407 ([2026-11-20](docs/benchmarks/record/benchmarks.md#the-two-chat-models-with-their-drafters-2026-11-20)):
 
 | Model | Draft | 512 | 32,639 |
 | --- | ---: | ---: | ---: |
 | Qwen3.8-27B | 7 | 11.52 → 18.70 (1.63×) | 10.53 → 13.50 (1.29×) |
 | Gemma 4 E4B QAT | 6 | 53.08 → 88.53 (1.67×) | 41.56 → 47.77 (1.15×) |
-
-On a short code prompt with the agent's thinking sampling, Qwen's DFlash2
-drafter reaches 19.30 tokens/s (1.71×; its MTP head, 17.00), and it still
-pays at 65,407 (1.25×); the E4B's stops at a 32,768-token prompt by default
-(`generation.draft_max_depth`, 0 never). The default context is 65,536.
-
-**How it got here.** nuclis began with Qwen3.8-27B and decoded it faster
-than llama.cpp at every length in October 2026. Gemma 4 26B-A4B, a mixture of
-experts at about 50 tokens/s, led until Qwen's drafter closed enough of the
-gap for its quality to lead; its gates stay, as the check of the expert path.
 
 ## Beyond chat
 

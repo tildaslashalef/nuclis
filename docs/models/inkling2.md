@@ -12,7 +12,7 @@ and a DSpark drafter (architecture `dflash`); commits and digests in
 [the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11),
 header facts in `inference/src/models/fixtures/inkling2-q4_k_xl.json`. The
 CPU reference ([inkling2_runtime.zig](../../inference/src/models/inkling2_runtime.zig))
-and the Metal plan ([§ Metal](#metal)) run it.
+and the Metal plan ([§ Metal](#metal)) run it. Catalogue entry `inkling-2-mini`, a chat `extra`, `verified` since 2026-11-27.
 
 ## Architecture
 

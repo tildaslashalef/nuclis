@@ -24,7 +24,7 @@ In nuclis it is the second speech model beside [Qwen3-TTS](qwen3-tts.md):
 `nuclis speak --model drama-3` and `POST /v1/audio/speech`
 ([api-speech.md § Drama 3](../guide/api-speech.md#drama-3)), in a voice
 saved with `nuclis voice add` or the model's own. One catalogue entry,
-`drama-3`, **legacy** since 2026-11-20: speech.cpp's GGUF layout (architecture `drama3`), converted
+`drama-3`, **archived** since 2026-11-20: speech.cpp's GGUF layout (architecture `drama3`), converted
 from `fishaudio/drama-3`, revision and digest in `src/catalog.json`. The
 layout and semantics as read from the GGUF and Fish's code:
 [record, 2026-10-30](../benchmarks/record/drama3.md#the-file-2026-10-30).
@@ -132,7 +132,7 @@ codes come from `fish_codec_encoder` on the CPU.
 
 ## Verified
 
-No gates: the entry is legacy since 2026-11-20. It still pulls, verifies,
+No gates: the entry is archived since 2026-11-20. It still pulls, verifies,
 and runs by name; the record holds the checks it passed (the traces, the
 codec on Metal, the round trip).
 

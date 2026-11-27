@@ -341,9 +341,9 @@ For a new file of a model nuclis runs (Qwen3.8's re-made UD-Q4_K_M,
 
 - `src/catalog.zig`: the index entry with the digests from § 1 (main
   file and companions), the architecture id, and the profile tag; `make
-  index` rewrites `src/catalog.json` from it. `config init` writes an
-  installed current entry as a registry entry; a user's existing registry
-  entry of the same name shadows it.
+  index` rewrites `src/catalog.json` from it. It enters as an `extra`,
+  `verified` or `preview` (naming `reason` and `promote_when`), with a
+  `summary` line and a fine-tune's `base`; `config init` registers it when verified.
 - `nuclis --help` and the commands' pages name the profiles and their
   defaults; update them.
 - Quality: a perplexity reference written by nuclis on the validated

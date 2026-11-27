@@ -133,7 +133,7 @@ pub const Service = struct {
         }
         // The catalogue's language models not on disk, so a client can offer the pull.
         for (&catalog.artifacts) |*entry| {
-            if (entry.kind != .generation or entry.status == .legacy or listing.find(entry.name) != null or loaded.config.models.find(entry.name) != null) continue;
+            if (entry.kind != .generation or !entry.listed(false) or listing.find(entry.name) != null or loaded.config.models.find(entry.name) != null) continue;
             const about: About = .{ .name = entry.title, .architecture = entry.architecture, .quantization = entry.quantization, .size_bytes = entry.main().size };
             const details = try self.languageDetails(arena, io, entry.name, about, false);
             try out.append(arena, .{ .id = entry.name, .owned_by = "nuclis", .details = .{ .object = details.* } });

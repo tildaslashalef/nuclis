@@ -183,29 +183,37 @@ the index, consulted to pull, to verify, and to supply defaults. A file is
 it is a `File` of the index with a pinned commit and SHA-256. Each artifact
 has a name (after the model, `qwen3.8-27b`, not the quantization), a kind
 (`generation`, shown as "chat", `decision`, `embedding`, `speech`,
-`transcription`), a lifecycle, and its files: the main file first, then
+`transcription`), a role and a support, a `summary` (one line of at most
+90 bytes saying what it is for), a `base` when it is a fine-tune (the Hub
+repository it derives from), and its files: the main file first, then
 its companions by role (`mmproj` for image input, and audio input on the
 one artifact marked `hears`, Gemma 4 E4B; `draft` for speculative
 decoding; `codec` for a speech model). A file from another repository
 (the DFlash2 drafter) names that repository, its commit, and its Hub name,
 and lands beside the artifact's other files.
 
-- **Lifecycle.** `current` artifacts are looked after: they have gates,
-  `config init` writes them, and `model pull --catalogue` fetches them all.
-  An `experimental` artifact rests on something still moving (a format not
-  yet merged upstream, a file re-uploaded): it is pinned, verified, and
-  gated like a current one, `model pull <name>` fetches it, and `model ls
-  --available` lists it marked, but `config init` and `--catalogue` skip
+- **Role.** Which model nuclis picks for a job. Each kind has exactly one
+  `default`, and a comptime check fails the build on a kind with none or
+  two: the configuration's model key for that kind defaults to its name,
+  and `model pull --catalogue` fetches the defaults with their companions.
+  Every other entry is an `extra`: `model pull <name>` fetches it, and
+  `--catalogue --extra` adds every extra that is not archived. A default
+  is always `verified` (comptime as well).
+- **Support.** How far nuclis vouches for the file. A `verified` artifact
+  is gated by every release. A `preview` artifact rests on something
+  still moving (a format still being merged by its authors, a file
+  re-uploaded): it is pinned, verified, and gated like a verified one, and
+  `model ls --available` lists it marked, but `config init` never writes
   it, a run prints its `reason` on stderr, and `promote_when` states what
-  makes it current. Its gates run when the file is present, and a skip
-  fails under `--strict` like any other. A `legacy` artifact (`gemma-4-12b-qat` and
-  `muse-glimmer-30b`, decided 2026-11-10; `gemma-4-26b-a4b`,
-  `laya-multilingual`, `drama-3`, and every Qwen3-TTS but the 1.7B
-  CustomVoice, decided 2026-11-20) still pulls, verifies, and runs by name,
-  but `config init` never writes it, `model ls --available` hides it
-  without `--all`, and nothing gates it, with one exception: the 26B-A4B's
-  gates name its files by path, the only real-model check of Gemma 4's
-  mixture-of-experts path.
+  makes it verified (comptime: a preview, and only a preview, names both).
+  Its gates run when the file is present, and a skip fails under
+  `--strict` like any other. An `archived` artifact still pulls,
+  verifies, and runs by name, but `config init` never writes it,
+  `--catalogue` never pulls it, `model ls --available` hides it without
+  `--all`, and no gate is required of it. One archived entry keeps gates:
+  the 26B-A4B's name its files by path, the only real-model check of
+  Gemma 4's mixture-of-experts path. When each entry took its role and support:
+  [the record](../benchmarks/record/catalogue.md#default-and-extra-verified-preview-and-archived-2026-11-27).
 - **Draft variants.** An artifact may carry several draft files, each with
   a variant name and its own speculative verdict (on or off, draft
   length). `qwen3.8-27b` has `dflash2`, the default, and `mtp`
@@ -225,21 +233,30 @@ and lands beside the artifact's other files.
   `draft` and print a notice.
 - **Installed first.** `nuclis model ls` lists what is installed, grouped
   by kind, one row per artifact (`-l` adds the files, sizes, commits, and
-  status); `--available` lists the current index entries that are not
-  installed, `--available --all` the legacy ones too. The JSON listing is
-  schema 7. `nuclis model adopt <path>` hashes a file the user placed
+  status, and for an index model its summary and base); `--available`
+  lists the index entries that are not archived, installed or not, grouped
+  by kind with each kind's default first, a ROLE column, and a SUPPORT
+  column only when a row is not verified; `--available --all` adds the
+  archived ones. The JSON listing is schema 8 (each row's `role` and
+  `support`), the `--available --json` index schema 2. `nuclis model adopt <path>` hashes a file the user placed
   under `models/` by hand, matches it to an index file by size and
   digest, and writes the sidecar a pull would have; an unmatched GGUF that
   parses gets a sidecar with no commit, and anything else is refused
   (`NotAModelFile`).
 - **The configuration follows.** `nuclis config init` writes a registry
-  entry for every installed current chat artifact and judges every other
-  installed GGUF by its adapter; `nuclis config sync [--prune] [--dry-run]`
+  entry for every installed verified chat artifact, default or extra
+  (`Artifact.written`), and judges every other installed GGUF by its
+  adapter; an installed preview or archived entry still resolves by its
+  catalogue name without one. `nuclis config sync [--prune] [--dry-run]`
   adds what was installed since and, with `--prune`, drops entries whose
   files are gone ([guide/configuration.md](../guide/configuration.md)).
-  `engine.model` defaults to `qwen3.8-27b`, the flagship, which codes at
-  about 25 tokens/s with its drafter on this machine; `config init` names
-  the first installed chat model instead when that one is absent.
+  Each per-kind model key (`engine.model`, `decide.model`, `embed.model`,
+  `speech.model`, `transcribe.model`) defaults to its kind's `default`,
+  read from the table at compile time (`catalog.defaultFor`), so the role
+  and the configuration cannot disagree. `engine.model` is therefore
+  `qwen3.8-27b`, the flagship, which codes at about 25 tokens/s with its
+  drafter on this machine; `config init` names the first installed chat
+  model instead when that one is absent.
 
 `nuclis model pull <name> [--with mmproj,draft | --all]` fetches through
 the index, and `--model` and `engine.model` resolve names through it.
@@ -247,26 +264,26 @@ Status (`present`, `absent`, `mismatch`, `unverified`) is read from
 sidecars, never by hashing, so a listing is instant.
 
 <!-- gen:catalogue -->
-| Name | Kind | Encoding | Main file | Status |
-| --- | --- | --- | --- | --- |
-| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
-| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
-| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
-| `inkling-2-mini` | generation | UD-Q4_K_XL | 17.63 GB | experimental |
-| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
-| `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
-| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
-| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
-| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
-| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
-| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+| Name | Kind | Role | Support | Encoding | Main file |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | default | verified | UD-Q4_K_M | 16.56 GB |
+| `gemma-4-12b-qat` | generation | extra | archived | Q4_0 (QAT) | 6.72 GB |
+| `gemma-4-26b-a4b` | generation | extra | archived | Q4_0 (QAT) | 14.25 GB |
+| `gemma-4-e4b-qat` | generation | extra | verified | Q4_0 (QAT) | 4.22 GB |
+| `inkling-2-mini` | generation | extra | verified | UD-Q4_K_XL | 17.63 GB |
+| `muse-glimmer-30b` | generation | extra | archived | UD-Q4_K_XL | 15.88 GB |
+| `laya` | decision | default | verified | F16 | 842.6 MB |
+| `laya-multilingual` | decision | extra | archived | F16 | 643.8 MB |
+| `clef-flash` | decision | extra | verified | Q4_K_M | 6.73 GB |
+| `embeddinggemma-2` | embedding | default | verified | Q8_0 | 309.9 MB |
+| `qwen3-tts-1.7b-customvoice` | speech | default | verified | BF16 | 3.83 GB |
+| `qwen3-tts-0.6b-customvoice` | speech | extra | archived | BF16 | 1.81 GB |
+| `qwen3-tts-1.7b-base` | speech | extra | archived | BF16 | 3.86 GB |
+| `qwen3-tts-0.6b-base` | speech | extra | archived | BF16 | 1.83 GB |
+| `qwen3-tts-1.7b-voicedesign` | speech | extra | archived | BF16 | 3.83 GB |
+| `drama-3` | speech | extra | archived | Q4_K | 20.79 GB |
+| `voicetut-tts` | speech | extra | verified | Q8_0 | 1.35 GB |
+| `nemotron-asr-0.6b` | transcription | default | verified | F32 | 2.55 GB |
 <!-- /gen -->
 
 **Decision artifacts** (`laya`, `laya-multilingual`, `clef-flash`) are

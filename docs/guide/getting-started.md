@@ -111,26 +111,26 @@ to an exact commit and SHA-256 digest (`nuclis model ls --available`
 lists the ones not installed):
 
 <!-- gen:catalogue -->
-| Name | Kind | Encoding | Main file | Status |
-| --- | --- | --- | --- | --- |
-| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
-| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
-| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
-| `inkling-2-mini` | generation | UD-Q4_K_XL | 17.63 GB | experimental |
-| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
-| `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
-| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
-| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
-| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
-| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
-| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+| Name | Kind | Role | Support | Encoding | Main file |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | default | verified | UD-Q4_K_M | 16.56 GB |
+| `gemma-4-12b-qat` | generation | extra | archived | Q4_0 (QAT) | 6.72 GB |
+| `gemma-4-26b-a4b` | generation | extra | archived | Q4_0 (QAT) | 14.25 GB |
+| `gemma-4-e4b-qat` | generation | extra | verified | Q4_0 (QAT) | 4.22 GB |
+| `inkling-2-mini` | generation | extra | verified | UD-Q4_K_XL | 17.63 GB |
+| `muse-glimmer-30b` | generation | extra | archived | UD-Q4_K_XL | 15.88 GB |
+| `laya` | decision | default | verified | F16 | 842.6 MB |
+| `laya-multilingual` | decision | extra | archived | F16 | 643.8 MB |
+| `clef-flash` | decision | extra | verified | Q4_K_M | 6.73 GB |
+| `embeddinggemma-2` | embedding | default | verified | Q8_0 | 309.9 MB |
+| `qwen3-tts-1.7b-customvoice` | speech | default | verified | BF16 | 3.83 GB |
+| `qwen3-tts-0.6b-customvoice` | speech | extra | archived | BF16 | 1.81 GB |
+| `qwen3-tts-1.7b-base` | speech | extra | archived | BF16 | 3.86 GB |
+| `qwen3-tts-0.6b-base` | speech | extra | archived | BF16 | 1.83 GB |
+| `qwen3-tts-1.7b-voicedesign` | speech | extra | archived | BF16 | 3.83 GB |
+| `drama-3` | speech | extra | archived | Q4_K | 20.79 GB |
+| `voicetut-tts` | speech | extra | verified | Q8_0 | 1.35 GB |
+| `nemotron-asr-0.6b` | transcription | default | verified | F32 | 2.55 GB |
 <!-- /gen -->
 
 Each kind has its command: `generation` models chat (`nuclis agent`,
@@ -138,22 +138,31 @@ Each kind has its command: `generation` models chat (`nuclis agent`,
 `nuclis embed`, `speech` models `nuclis speak` (in voices saved with `nuclis
 voice add`, on the Bases and Drama 3), and `transcription` models `nuclis
 transcribe`. What each one is: [models/catalogue.md](../models/catalogue.md).
-A *legacy* model pulls, verifies, and runs by name, but `config init` does
-not register it and `model ls --available` shows it only with `--all`.
+Each kind has one *default*, the model its configuration key names; every
+other entry is an *extra*. A *verified* model is gated by every release; a
+*preview* one is gated too but prints why it rests on something still
+moving when it runs; an *archived* one pulls, verifies, and runs by name
+with no gate required, but `--catalogue` never pulls it and `model ls
+--available` shows it only with `--all`.
 
 ```sh
 nuclis model pull qwen3.8-27b                     # the model alone
 nuclis model pull qwen3.8-27b --all               # with its default draft and vision companions
 nuclis model pull qwen3.8-27b --with draft=mtp   # or pick them: mmproj, draft[=variant]
 nuclis model pull qwen3.8-27b --all --variants    # every draft variant too
-nuclis model pull --catalogue                     # every current model with --all, about 42 GB
+nuclis model pull --catalogue                     # each kind's default with --all, about 29 GB
+nuclis model pull --catalogue --extra             # and every extra not archived, about 33 GB more
 nuclis model ls                                   # what is here
 ```
 
-`--catalogue` sets a machine up in one command: it prints the plan (each
+`--catalogue` sets a machine up in one command (`--extra` adds the
+extras that are not archived): it prints the plan (each
 entry's files, and what is already here) before the first download, skips
 files already verified, and when an entry fails reports it and goes on to
-the next. `nuclis config init` then registers them all.
+the next. `nuclis config init` then registers the verified chat models
+installed; every other entry resolves by its index name. On the Linux
+CPU build, pull `gemma-4-e4b-qat` by name or add `--extra`: plain
+`--catalogue` fetches only the 27B for chat, sized for the macOS GPU.
 
 Files land in `~/.nuclis/models/<owner>/<repo>/<file>`, each SHA-256
 verified before it is published. If the Hub's digest at the pinned commit
@@ -283,10 +292,12 @@ read from the Hub), as `nuclis inspect` shows them for a local file.
 grouped by kind (chat, speech, transcription, decision, embedding), one
 row per model with its quantization, size, and companions (`+mmproj
 +draft`); a file the index does not pin is marked `not in the index`, and
-the default model `default`. `-l` adds every file with its commit, digest,
+the one `engine.model` names `engine.model` (JSON `configured`). `-l` adds every file with its commit, digest,
 path, and status (`present`, `absent`, `mismatch`, or `unverified` when it
-has no sidecar). `--available` lists the index entries not installed,
-`--available --all` the legacy ones too. `--model` and `engine.model`
+has no sidecar), and for an index model its one-line summary. `--available`
+lists the index, installed or not, by kind with each kind's default first
+(a ROLE column, and SUPPORT when a row is a preview or archived);
+`--available --all` adds the archived entries. `--model` and `engine.model`
 accept a settings entry, an index name, or a path; a missing file fails
 before anything loads, naming the path it looked for.
 

@@ -376,7 +376,7 @@ ids its `tokenizer_config.json` names, the 32 texts of `inference/src/models/fix
 (accents composed and decomposed, Hangul jamo, composition exclusions, CJK,
 emoji, code, whitespace runs, controls, every added-token kind), and every
 text the 8 oracle requests of `requests.json` tokenized, found in their
-recorded sequences. For the multilingual set (the legacy multilingual
+recorded sequences. For the multilingual set (the archived multilingual
 checkpoint, ungated) it is 256,000 ids, 580,604 merges, and 59
 texts (those 32, then French, German, Spanish, Arabic, Hindi, Russian, and
 Thai, code points outside the vocabulary for byte fallback, `<mask>` and

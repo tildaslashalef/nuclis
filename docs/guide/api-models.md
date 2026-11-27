@@ -55,9 +55,11 @@ settings, or a model opening or closing (`loaded`).
 
 The list holds every decision model of the catalogue and the registry,
 pulled or not; every language model that is present (the ones `/model`
-offers in `nuclis agent`), then the catalogue's language models not on
-disk; every embedding, speech, and transcription model of the catalogue
-and the registry, pulled or not.
+offers in `nuclis agent`, an archived one included), then the catalogue's
+language models not on disk that are not archived (defaults, extras, and
+previews alike); every embedding, speech, and transcription model of the
+catalogue and the registry, pulled or not. Outside the language models an
+archived catalogue entry is listed like any other.
 
 Beside `id` (the name a request sends) and `object`, an entry carries
 `created`, always 0 (OpenAI's schema requires it; nuclis has no creation

@@ -86,9 +86,11 @@ pub const PullOptions = struct {
     draft_variant: ?[]const u8 = null,
     all: bool = false,
     variants: bool = false,
-    /// `--catalogue`: every current catalogue entry with `--all`, in place
-    /// of a name; only `--force` and `--json` go with it.
+    /// `--catalogue`: every default catalogue entry with `--all`, in place
+    /// of a name; only `--extra`, `--force`, and `--json` go with it.
     catalogue: bool = false,
+    /// `--catalogue --extra`: every extra that is not archived as well.
+    extra: bool = false,
     file: ?[]const u8 = null,
     /// `main`, a tag, a branch, or a commit; the sidecar always records the
     /// commit it resolved to.
@@ -426,8 +428,8 @@ pub fn pull(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map,
     return out.writeAll(reports.written());
 }
 
-/// One current catalogue entry as `pull --catalogue` takes it: the files
-/// `--all` selects, and what of them is already here and verified.
+/// One catalogue entry as `pull --catalogue` takes it: the files `--all`
+/// selects, and what of them is already here and verified.
 pub const CatalogueEntry = struct {
     artifact: *const catalog.Artifact,
     files: []const *const catalog.File,
@@ -436,14 +438,15 @@ pub const CatalogueEntry = struct {
     present: u64,
 };
 
-/// Every current entry in catalogue order, each with its `--all` files;
-/// legacy entries never. `models` is the models directory the sidecars are
-/// read from (`present` counts zero for a directory that does not exist).
-pub fn catalogueSelection(arena: Allocator, io: std.Io, models: []const u8) ![]const CatalogueEntry {
+/// Every default entry in catalogue order, with `extra` every extra that
+/// is not archived too, each with its `--all` files; archived entries
+/// never. `models` is the models directory the sidecars are read from
+/// (`present` counts zero for a directory that does not exist).
+pub fn catalogueSelection(arena: Allocator, io: std.Io, models: []const u8, extra: bool) ![]const CatalogueEntry {
     var entries: std.ArrayList(CatalogueEntry) = .empty;
     var diag: config.Diagnostic = .{};
     for (&catalog.artifacts) |*a| {
-        if (a.status != .current) continue;
+        if (a.support == .archived or (a.role == .extra and !extra)) continue;
         const files = try selectFiles(arena, a, .{ .all = true }, &diag);
         var entry: CatalogueEntry = .{ .artifact = a, .files = files, .bytes = 0, .present = 0 };
         for (files) |f| {
@@ -462,8 +465,9 @@ pub fn catalogueSelection(arena: Allocator, io: std.Io, models: []const u8) ![]c
     return entries.items;
 }
 
-/// `pull --catalogue`: every current entry with its default companions, so
-/// one command sets a machine up; legacy entries are never pulled. The plan
+/// `pull --catalogue`: every default entry (with `--extra`, every extra
+/// not archived too) with its default companions, so one command sets a
+/// machine up; archived entries are never pulled. The plan
 /// prints first. An entry that fails is reported and the rest continue; an
 /// interrupt stops them all. Under `--json`, one array of the per-repository
 /// reports, written at the end.
@@ -471,7 +475,7 @@ pub fn pullCatalogue(gpa: Allocator, io: std.Io, environ: *const std.process.Env
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    const entries = try catalogueSelection(arena, io, try modelsDir(arena, root));
+    const entries = try catalogueSelection(arena, io, try modelsDir(arena, root), options.extra);
     if (!json) {
         try renderCataloguePlan(arena, out, entries, ui);
         try out.flush();
@@ -1331,8 +1335,9 @@ pub const Installed = struct {
     kind: ?catalog.ModelKind,
     /// The index artifact, null for a file not in the index.
     artifact: ?[]const u8 = null,
-    legacy: bool = false,
-    experimental: bool = false,
+    /// The index artifact's role and support; null outside the index.
+    role: ?catalog.Role = null,
+    support: ?catalog.Support = null,
     registered: ?RegisteredAs = null,
     architecture: ?[]const u8 = null,
     quantization: []const u8,
@@ -1340,8 +1345,9 @@ pub const Installed = struct {
     runnable: bool,
     /// The files present, summed.
     size: u64,
-    /// `engine.model` names it.
-    default: bool = false,
+    /// `engine.model` names it (the NOTE word `engine.model`; the
+    /// catalogue's `default` is `role`).
+    configured: bool = false,
     files: []const InstalledFile,
     defaults: ?RunDefaults = null,
     warnings: []const []const u8 = &.{},
@@ -1366,8 +1372,12 @@ pub const Available = struct {
     name: []const u8,
     title: []const u8,
     kind: catalog.ModelKind,
-    status: catalog.Lifecycle,
-    /// An experimental entry's reason and what promotes it.
+    role: catalog.Role,
+    support: catalog.Support,
+    summary: []const u8,
+    /// The Hub repository a fine-tune derives from.
+    base: ?[]const u8 = null,
+    /// A preview entry's reason and what promotes it.
     reason: ?[]const u8 = null,
     promote_when: ?[]const u8 = null,
     repo: []const u8,
@@ -1386,12 +1396,12 @@ pub const LsOptions = struct {
     long: bool = false,
     /// The index view instead of the installed one.
     available: bool = false,
-    /// With `available`: legacy artifacts too (experimental ones always).
+    /// With `available`: archived artifacts too.
     all: bool = false,
 };
 
 pub const Listing = struct {
-    schema_version: u32 = 7,
+    schema_version: u32 = 8,
     models_dir: []const u8,
     /// Every installed model's files, summed.
     total_bytes: u64,
@@ -1400,7 +1410,7 @@ pub const Listing = struct {
     installed: []const Installed,
     /// Model files with no sidecar (`nuclis model adopt <path>` writes one).
     without_sidecar: []const []const u8,
-    /// Current and experimental index artifacts not installed.
+    /// Index artifacts not installed and not archived.
     available: usize,
     /// Model files found above the `<owner>/<repo>/` level; they are not
     /// listed because nothing can say which repository they came from.
@@ -1453,7 +1463,7 @@ pub const Listing = struct {
                     .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(i.size)}) },
                     .{ .text = try companionList(arena, i.files), .role = .muted },
                     .{ .text = try kit.blocks.statusText(arena, ui, st.status, st.word), .role = st.status.role() },
-                    .{ .text = try installedNote(arena, i), .role = if (i.default) .emphasis else .muted },
+                    .{ .text = try installedNote(arena, i), .role = if (i.configured) .emphasis else .muted },
                 });
             }
             try kit.table.render(out, ui, arena, 0, &columns, rows);
@@ -1488,15 +1498,17 @@ pub const Listing = struct {
                 try renderAvailableLong(arena, out, a, ui);
             }
         } else {
-            var lifecycle_shown = false;
-            for (self.index) |a| lifecycle_shown = lifecycle_shown or a.status != .current;
+            // SUPPORT only when a row is not verified.
+            var support_shown = false;
+            for (self.index) |a| support_shown = support_shown or a.support != .verified;
             const columns = [_]kit.table.Column{
                 .{ .title = "NAME", .truncate = false },
-                .{ .title = "KIND", .drop = 2 },
-                .{ .title = "QUANT", .drop = 3 },
+                .{ .title = "KIND", .drop = 3 },
+                .{ .title = "ROLE", .drop = 2 },
+                .{ .title = "QUANT", .drop = 4 },
                 .{ .title = "SIZE", .alignment = .right, .truncate = false },
                 .{ .title = "STATUS", .truncate = false },
-                .{ .title = "LIFECYCLE", .drop = 1 },
+                .{ .title = "SUPPORT", .drop = 1 },
             };
             const rows = try arena.alloc([]const kit.table.Cell, self.index.len);
             for (self.index, rows) |a, *row| {
@@ -1504,20 +1516,21 @@ pub const Listing = struct {
                 row.* = try arena.dupe(kit.table.Cell, &.{
                     .{ .text = a.name, .role = .id },
                     .{ .text = catalog.groupName(a.kind) },
+                    .{ .text = @tagName(a.role), .role = if (a.role == .default) .emphasis else .muted },
                     .{ .text = a.quantization, .role = .muted },
                     .{ .text = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(a.size)}) },
                     .{ .text = try kit.blocks.statusText(arena, ui, st, if (a.installed) "installed" else "not pulled"), .role = st.role() },
-                    .{ .text = @tagName(a.status), .role = .muted },
+                    .{ .text = if (a.support == .verified) "" else @tagName(a.support), .role = .muted },
                 });
             }
-            try kit.table.render(out, ui, arena, 0, columns[0..if (lifecycle_shown) columns.len else columns.len - 1], rows);
+            try kit.table.render(out, ui, arena, 0, columns[0..if (support_shown) columns.len else columns.len - 1], rows);
         }
         if (!options.all) {
-            var legacy: usize = 0;
-            for (&catalog.artifacts) |a| legacy += @intFromBool(a.status == .legacy);
-            if (legacy > 0) {
+            var archived: usize = 0;
+            for (&catalog.artifacts) |a| archived += @intFromBool(a.support == .archived);
+            if (archived > 0) {
                 try out.writeByte('\n');
-                try kit.blocks.hint(out, ui, try std.fmt.allocPrint(arena, "{f} hidden: ", .{kit.values.countIrregular(legacy, "legacy entry", "legacy entries")}), "nuclis model ls --available --all", "");
+                try kit.blocks.hint(out, ui, try std.fmt.allocPrint(arena, "{f} hidden: ", .{kit.values.countIrregular(archived, "archived entry", "archived entries")}), "nuclis model ls --available --all", "");
             }
         }
         try kit.blocks.hint(out, ui, "", "nuclis model pull <name> --all", " fetches one with its companions");
@@ -1538,14 +1551,13 @@ fn installedStatus(i: Installed) struct { status: kit.style.Status, word: []cons
     return .{ .status = .ok, .word = "verified" };
 }
 
-/// The NOTE column: the default, its registry name, its lifecycle when not
-/// current, outside the index.
+/// The NOTE column: `engine.model` when it names the row, its registry name,
+/// its support when not verified, outside the index.
 fn installedNote(arena: Allocator, i: Installed) ![]const u8 {
     var parts: std.ArrayList([]const u8) = .empty;
-    if (i.default) try parts.append(arena, "default");
+    if (i.configured) try parts.append(arena, "engine.model");
     if (i.registered) |r| if (!std.mem.eql(u8, r.name, i.name)) try parts.append(arena, try std.fmt.allocPrint(arena, "registered as {s}", .{try kit.text.clean(arena, r.name)}));
-    if (i.legacy) try parts.append(arena, "legacy");
-    if (i.experimental) try parts.append(arena, "experimental");
+    if (i.support) |s| if (s != .verified) try parts.append(arena, @tagName(s));
     if (i.artifact == null) try parts.append(arena, "not in the catalogue");
     return std.mem.join(arena, ", ", parts.items);
 }
@@ -1584,8 +1596,9 @@ fn renderInstalledLong(arena: Allocator, out: *std.Io.Writer, i: Installed, ui: 
     try out.print(" {s}{s} {s} {s} {s} {f}{s}  ", .{ ui.on(.muted), if (i.kind) |k| catalog.groupName(k) else "other", ui.glyphs.dot, try kit.text.clean(arena, i.quantization), ui.glyphs.dot, kit.values.size(i.size), ui.off(.muted) });
     try kit.blocks.status(out, ui, st.status, st.word);
     const note = try installedNote(arena, i);
-    if (note.len > 0) try out.print("  {s}{s}{s}", .{ ui.on(if (i.default) .emphasis else .muted), note, ui.off(if (i.default) .emphasis else .muted) });
+    if (note.len > 0) try out.print("  {s}{s}{s}", .{ ui.on(if (i.configured) .emphasis else .muted), note, ui.off(if (i.configured) .emphasis else .muted) });
     try out.writeByte('\n');
+    if (i.artifact) |name| if (catalog.find(name)) |a| try renderSummary(out, a.summary, a.base, ui);
     const rows = try arena.alloc([]const kit.table.Cell, i.files.len);
     for (i.files, rows) |f, *row| {
         const fs: kit.style.Status = switch (f.status) {
@@ -1614,12 +1627,22 @@ fn renderInstalledLong(arena: Allocator, out: *std.Io.Writer, i: Installed, ui: 
     if (i.defaults) |d| try renderDefaults(arena, out, d, ui);
 }
 
+/// `-l`'s line under a catalogue model's: what it is for, and the
+/// repository a fine-tune derives from.
+fn renderSummary(out: *std.Io.Writer, summary: []const u8, base: ?[]const u8, ui: kit.Ui) !void {
+    try out.print("  {s}{s}", .{ ui.on(.muted), summary });
+    if (base) |b| try out.print("; fine-tuned from {s}", .{b});
+    try out.print("{s}\n", .{ui.off(.muted)});
+}
+
 /// `model ls --available -l`: one catalogue entry and the files it pins.
 fn renderAvailableLong(arena: Allocator, out: *std.Io.Writer, a: Available, ui: kit.Ui) !void {
     try out.print("{s}{s}{s} {s}{s} {s} {s} {s} {f} {s} {s}@{s}{s}  ", .{ ui.on(.title), a.name, ui.off(.title), ui.on(.muted), catalog.groupName(a.kind), ui.glyphs.dot, a.quantization, ui.glyphs.dot, kit.values.size(a.size), ui.glyphs.dot, a.repo, a.revision[0..12], ui.off(.muted) });
     try kit.blocks.status(out, ui, if (a.installed) .ok else .not_checked, if (a.installed) "installed" else "not pulled");
-    if (a.status != .current) try out.print("  {s}{s}{s}", .{ ui.on(.muted), @tagName(a.status), ui.off(.muted) });
+    try out.print("  {s}{s}{s}", .{ ui.on(if (a.role == .default) .emphasis else .muted), @tagName(a.role), ui.off(if (a.role == .default) .emphasis else .muted) });
+    if (a.support != .verified) try out.print(" {s}{s} {s}{s}", .{ ui.on(.muted), ui.glyphs.dot, @tagName(a.support), ui.off(.muted) });
     try out.writeByte('\n');
+    try renderSummary(out, a.summary, a.base, ui);
     if (a.reason) |r| try out.print("  {s}{s}; promoted when {s}{s}\n", .{ ui.on(.muted), r, a.promote_when.?, ui.off(.muted) });
     const rows = try arena.alloc([]const kit.table.Cell, a.files.len);
     for (a.files, rows) |f, *row| row.* = try arena.dupe(kit.table.Cell, &.{
@@ -1827,9 +1850,9 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
         }
         if (!main_present and present.items.len > 0) try warnings.append(arena, try arena.print("only companions are present; `nuclis model pull {s}` fetches the model", .{a.name}));
         if (main_present or present.items.len > 0) {
-            try installed.append(arena, .{ .name = a.name, .kind = a.kind, .artifact = a.name, .legacy = a.status == .legacy, .experimental = a.status == .experimental, .architecture = a.architecture, .quantization = a.quantization, .runnable = true, .size = size, .files = present.items, .defaults = runDefaults(a), .warnings = warnings.items });
-        } else if (a.status.listed(false)) available += 1;
-        try index.append(arena, .{ .name = a.name, .title = a.title, .kind = a.kind, .status = a.status, .reason = a.reason, .promote_when = a.promote_when, .repo = a.repo, .revision = a.revision, .architecture = a.architecture, .quantization = a.quantization, .size = a.totalSize(), .installed = main_present, .files = avail_files.items, .defaults = runDefaults(a) });
+            try installed.append(arena, .{ .name = a.name, .kind = a.kind, .artifact = a.name, .role = a.role, .support = a.support, .architecture = a.architecture, .quantization = a.quantization, .runnable = true, .size = size, .files = present.items, .defaults = runDefaults(a), .warnings = warnings.items });
+        } else if (a.listed(false)) available += 1;
+        try index.append(arena, .{ .name = a.name, .title = a.title, .kind = a.kind, .role = a.role, .support = a.support, .summary = a.summary, .base = a.base, .reason = a.reason, .promote_when = a.promote_when, .repo = a.repo, .revision = a.revision, .architecture = a.architecture, .quantization = a.quantization, .size = a.totalSize(), .installed = main_present, .files = avail_files.items, .defaults = runDefaults(a) });
     }
     // Files outside the index: each main file a row, its companions with it.
     var without: std.ArrayList([]const u8) = .empty;
@@ -1891,7 +1914,7 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
     var total: u64 = 0;
     for (installed.items) |*row| {
         total += row.size;
-        if (default_model) |d| row.default = std.mem.eql(u8, row.name, d) or (row.registered != null and std.mem.eql(u8, row.registered.?.name, d));
+        if (default_model) |d| row.configured = std.mem.eql(u8, row.name, d) or (row.registered != null and std.mem.eql(u8, row.registered.?.name, d));
     }
     std.mem.sort(Installed, installed.items, {}, struct {
         fn less(_: void, a: Installed, b: Installed) bool {
@@ -1901,11 +1924,14 @@ pub fn list(arena: Allocator, io: std.Io, root: []const u8, registry: config.Mod
             return std.mem.lessThan(u8, a.name, b.name);
         }
     }.less);
+    // The index view: by kind as the installed rows, each kind's default
+    // first, then by name.
     std.mem.sort(Available, index.items, {}, struct {
         fn less(_: void, a: Available, b: Available) bool {
             const ka = kindOrder(a.kind);
             const kb = kindOrder(b.kind);
             if (ka != kb) return ka < kb;
+            if ((a.role == .default) != (b.role == .default)) return a.role == .default;
             return std.mem.lessThan(u8, a.name, b.name);
         }
     }.less);
@@ -1998,13 +2024,11 @@ pub fn ls(gpa: Allocator, io: std.Io, root: []const u8, registry: config.Models,
     defer arena_state.deinit();
     var listing = try list(arena_state.allocator(), io, root, registry, default_model);
     if (options.available) {
-        if (!options.all) {
-            var current: std.ArrayList(Available) = .empty;
-            for (listing.index) |a| if (a.status.listed(false)) try current.append(arena_state.allocator(), a);
-            listing.index = current.items;
-        }
+        var shown: std.ArrayList(Available) = .empty;
+        for (listing.index) |a| if (options.all or a.support != .archived) try shown.append(arena_state.allocator(), a);
+        listing.index = shown.items;
         if (json) {
-            try std.json.Stringify.value(.{ .schema_version = 1, .models_dir = listing.models_dir, .artifacts = listing.index }, .{ .whitespace = .indent_2 }, out);
+            try std.json.Stringify.value(.{ .schema_version = 2, .models_dir = listing.models_dir, .artifacts = listing.index }, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
     } else listing.index = &.{};
@@ -2990,7 +3014,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expectEqual(@as(usize, 0), empty.installed.len);
     try std.testing.expectEqual(catalog.artifacts.len, empty.index.len);
     var listed: usize = 0;
-    for (&catalog.artifacts) |*a| listed += @intFromBool(a.status.listed(false));
+    for (&catalog.artifacts) |*a| listed += @intFromBool(a.listed(false));
     try std.testing.expectEqual(listed, empty.available);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
     const qwen = catalog.find("qwen3.8-27b").?;
@@ -3044,7 +3068,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     const names = [_][]const u8{ "local", "qwen3.8-27b", "repo", "acme/encoder" };
     for (names, listing.installed) |name, row| try std.testing.expectEqualStrings(name, row.name);
     const row = listing.find("qwen3.8-27b").?;
-    try std.testing.expect(row.default and row.kind == .generation and row.artifact != null);
+    try std.testing.expect(row.configured and row.kind == .generation and row.artifact != null);
     try std.testing.expectEqualStrings("big", row.registered.?.name);
     // The present files only: the projector is not pulled.
     try std.testing.expectEqual(@as(usize, 3), row.files.len);
@@ -3097,7 +3121,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     const text = out.written();
     try std.testing.expect(std.mem.startsWith(u8, text, "◆ "));
     try std.testing.expect(std.mem.indexOf(u8, text, "/models · 4 models · 38 B\n\nNAME          KIND   QUANT        SIZE  COMPANIONS         STATUS          NOTE\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, text, "\nqwen3.8-27b   chat   UD-Q4_K_M    12 B  draft mtp dflash2  ✗ mismatch      default, registered as big\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, text, "\nqwen3.8-27b   chat   UD-Q4_K_M    12 B  draft mtp dflash2  ✗ mismatch      engine.model, registered as big\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\nrepo          chat   Q4           12 B  draft              ▲ not runnable  not in the catalogue\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\nacme/encoder  other  safetensors  10 B                     ▲ not runnable  not in the catalogue\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "MTP/mtp-Qwen3.8-27B-Q4_0.gguf: its sidecar records other content than the index pins") != null);
@@ -3109,7 +3133,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expect(std.mem.indexOf(u8, text, "1bce504dfecd") == null);
     out.clearRetainingCapacity();
     try listing.render(arena, &out.writer, .{ .long = true }, false, .plain);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b chat · UD-Q4_K_M · 12 B  ✗ mismatch  default, registered as big\n  ROLE           SIZE  COMMIT        SHA256        STATUS        PATH\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b chat · UD-Q4_K_M · 12 B  ✗ mismatch  engine.model, registered as big\n  the flagship: the agent's coder, with its DFlash2 and MTP drafters\n  ROLE           SIZE  COMMIT        SHA256        STATUS        PATH\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  main            4 B  ce331efc48d5  1bce504dfecd  ✓ verified    unsloth/Qwen3.8-27B-GGUF/Qwen3.8-27B-UD-Q4_K_M.gguf\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  draft dflash2   4 B  --            --            ▲ unverified  unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n  Runs with  speculative on (draft dflash2, length 7), think low, thinking budget 2048, profile qwen38\n") != null);
@@ -3117,31 +3141,55 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try listing.render(arena, &out.writer, .{}, true, .plain);
     const parsed = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer parsed.deinit();
-    try std.testing.expectEqual(@as(i64, 7), parsed.value.object.get("schema_version").?.integer);
+    try std.testing.expectEqual(@as(i64, 8), parsed.value.object.get("schema_version").?.integer);
     const rows = parsed.value.object.get("installed").?.array.items;
     try std.testing.expectEqualStrings("qwen3.8-27b", rows[1].object.get("name").?.string);
+    try std.testing.expectEqualStrings("default", rows[1].object.get("role").?.string);
+    try std.testing.expectEqualStrings("verified", rows[1].object.get("support").?.string);
+    try std.testing.expect(rows[1].object.get("legacy") == null);
+    // `configured` is engine.model naming it; `role` is the catalogue's.
+    try std.testing.expect(rows[1].object.get("configured").?.bool and rows[1].object.get("default") == null);
     // The JSON keeps whole digests.
     try std.testing.expectEqualStrings(qwen.main().sha256, rows[1].object.get("files").?.array.items[0].object.get("sha256").?.string);
     try std.testing.expectEqualStrings("gone", parsed.value.object.get("missing").?.array.items[0].object.get("name").?.string);
 
-    // The index view: current and experimental artifacts by kind, installed
-    // ones marked, legacy behind --all.
+    // The index view: grouped by kind, each kind's default first, installed
+    // ones marked, archived ones behind --all; every row shown is verified,
+    // so there is no SUPPORT column.
     out.clearRetainingCapacity();
     try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 9 entries, pinned and verified by name\n\nNAME   "));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 chat           UD-Q4_K_M   16.56 GB  ✓ installed   current\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        decision       F16         842.6 MB  – not pulled  current\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") == null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n→ 9 legacy entries hidden: nuclis model ls --available --all\n") != null);
+    const view = out.written();
+    try std.testing.expect(std.mem.startsWith(u8, view, "◆ the catalogue · 9 entries, pinned and verified by name\n\nNAME   "));
+    try std.testing.expect(std.mem.indexOf(u8, view, "\nqwen3.8-27b                 chat           default  UD-Q4_K_M   16.56 GB  ✓ installed\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, view, "\nlaya                        decision       default  F16         842.6 MB  – not pulled\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, view, "\nclef-flash                  decision       extra    Q4_K_M      ") != null);
+    try std.testing.expect(std.mem.indexOf(u8, view, "SUPPORT") == null and std.mem.indexOf(u8, view, "gemma-4-12b-qat") == null);
+    const order = [_][]const u8{ "\nqwen3.8-27b ", "\ngemma-4-e4b-qat ", "\ninkling-2-mini ", "\nqwen3-tts-1.7b-customvoice ", "\nvoicetut-tts ", "\nnemotron-asr-0.6b ", "\nlaya ", "\nclef-flash ", "\nembeddinggemma-2 " };
+    for (order[0 .. order.len - 1], order[1..]) |before, after| try std.testing.expect(std.mem.indexOf(u8, view, before).? < std.mem.indexOf(u8, view, after).?);
+    try std.testing.expect(std.mem.indexOf(u8, view, "\n→ 9 archived entries hidden: nuclis model ls --available --all\n") != null);
+    // With --all the archived rows join their kind after its default, marked.
+    out.clearRetainingCapacity();
+    try ls(alloc, io, root, .{}, null, .{ .available = true, .all = true }, false, &out.writer, .plain);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "SUPPORT\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\ngemma-4-12b-qat             chat           extra    Q4_0 (QAT)   6.72 GB  – not pulled  archived\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya ").? < std.mem.indexOf(u8, out.written(), "\nlaya-multilingual ").?);
     out.clearRetainingCapacity();
     try ls(alloc, io, root, .{}, null, .{ .available = true, .all = true, .long = true }, false, &out.writer, .plain);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "  ✓ installed  default\n  the flagship: the agent's coder, with its DFlash2 and MTP drafters\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "  – not pulled  extra · archived\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "; fine-tuned from k2-fsa/OmniVoice\n") != null);
     out.clearRetainingCapacity();
     try ls(alloc, io, root, .{}, null, .{ .available = true }, true, &out.writer, .plain);
     const index = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer index.deinit();
-    try std.testing.expectEqual(listed, index.value.object.get("artifacts").?.array.items.len);
+    try std.testing.expectEqual(@as(i64, 2), index.value.object.get("schema_version").?.integer);
+    const artifacts = index.value.object.get("artifacts").?.array.items;
+    try std.testing.expectEqual(listed, artifacts.len);
+    try std.testing.expectEqualStrings("default", artifacts[0].object.get("role").?.string);
+    try std.testing.expectEqualStrings("verified", artifacts[0].object.get("support").?.string);
+    try std.testing.expect(artifacts[0].object.get("status") == null);
 }
 
 /// Test double for `readRange`: serves a directory image in `chunk`-sized
@@ -3581,7 +3629,7 @@ test "adopt writes a sidecar for a file placed by hand, once, and only under the
     try std.testing.expectError(error.FileNotFound, adopt(alloc, io, root, "acme/encoder/absent.gguf", false, true, &out.writer, .plain, &diag));
 }
 
-test "pull --catalogue takes every current entry with its defaults, and counts what is here" {
+test "pull --catalogue takes the defaults, --extra the extras not archived, and counts what is here" {
     const io = std.testing.io;
     var tmp = std.testing.tmpDir(.{});
     defer tmp.cleanup();
@@ -3589,10 +3637,13 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const models = try tmp.dir.realPathFileAlloc(io, ".", arena);
-    const empty = try catalogueSelection(arena, io, models);
-    try std.testing.expectEqual(@as(usize, 8), empty.len);
+    const defaults = try catalogueSelection(arena, io, models, false);
+    try std.testing.expectEqual(std.enums.values(catalog.ModelKind).len, defaults.len);
+    for (defaults) |e| try std.testing.expect(e.artifact.role == .default and e.present == 0);
+    const empty = try catalogueSelection(arena, io, models, true);
+    try std.testing.expectEqual(@as(usize, 9), empty.len);
     for (empty) |e| {
-        try std.testing.expectEqual(catalog.Lifecycle.current, e.artifact.status);
+        try std.testing.expect(e.artifact.support != .archived);
         try std.testing.expectEqual(@as(u64, 0), e.present);
     }
     const qwen = empty[0];
@@ -3610,11 +3661,11 @@ test "pull --catalogue takes every current entry with its defaults, and counts w
         try tmp.dir.createDirPath(io, std.fs.path.dirname(local[models.len + 1 ..]).?);
         try writeSidecar(arena, io, .cwd(), try sidecarPath(arena, local), .{ .repo = qwen.artifact.repo, .file = f.path, .revision = qwen.artifact.revision, .sha256 = sha, .size = f.size, .role = f.role, .downloaded_at = "2026-11-20T00:00:00Z", .nuclis_version = "test" });
     }
-    const after = try catalogueSelection(arena, io, models);
+    const after = try catalogueSelection(arena, io, models, true);
     try std.testing.expectEqual(files[0].size, after[0].present);
     var out: std.Io.Writer.Allocating = .init(arena);
     try renderCataloguePlan(arena, &out.writer, after, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 8 entries, 15 files, 43.03 GB · "));
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 9 entries, 17 files, 61.29 GB · "));
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2  19.55 GB  ○ partly here\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                 842.6 MB  – to fetch\n") != null);
 }

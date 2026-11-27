@@ -245,15 +245,16 @@ pub const commands = [_]Command{
     .{ .name = "model", .summary = "pull, list, judge, and remove Hub artifacts", .actions = &.{
         .{ .name = "ls", .summary = "what is installed, by kind", .flags = &.{
             .{ .name = "--long", .short = "-l", .summary = "each file's commit, digest, and path" },
-            .{ .name = "--available", .summary = "the index instead" },
-            .{ .name = "--all", .summary = "with --available: legacy artifacts too" },
+            .{ .name = "--available", .summary = "the index instead, by kind, defaults first" },
+            .{ .name = "--all", .summary = "with --available: archived artifacts too" },
             json,
         } },
         .{ .name = "pull", .summary = "fetch a model, verified by digest", .positionals = &.{.repo}, .flags = &.{
             .{ .name = "--with", .value = .roles, .summary = "also fetch these companions" },
             .{ .name = "--all", .summary = "every companion the entry names" },
             .{ .name = "--variants", .summary = "with --all: every draft variant" },
-            .{ .name = "--catalogue", .summary = "every current catalogue entry, with --all" },
+            .{ .name = "--catalogue", .summary = "each kind's default entry, with --all" },
+            .{ .name = "--extra", .summary = "with --catalogue: every extra not archived too" },
             .{ .name = "--file", .value = .text, .summary = "which file of the repository" },
             .{ .name = "--revision", .value = .text, .summary = "a branch, tag, or commit" },
             .{ .name = "--role", .value = .{ .choice = names(model.Role) }, .summary = "the file's role" },
@@ -955,8 +956,9 @@ test "every flag in the table is one the parser takes for that command" {
         try args.append(a, command.name);
         if (action.name.len > 0) try args.append(a, action.name);
         for (action.positionals) |p| try args.append(a, sample(p));
-        // `--catalogue` stands in for pull's name.
+        // `--catalogue` stands in for pull's name; `--extra` follows it.
         if (std.mem.eql(u8, f.name, "--catalogue")) _ = args.pop();
+        if (std.mem.eql(u8, f.name, "--extra")) args.items[args.items.len - 1] = "--catalogue";
         try args.append(a, f.name);
         if (f.value != .none) try args.append(a, sample(f.value));
         // What the command needs besides the flag under test.

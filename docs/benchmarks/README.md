@@ -314,7 +314,7 @@ document cites it. An `acceptance` workload delegates to
 `scripts/bench/nuclis-baseline.py` (the four-length arrays, `/usr/bin/time`,
 hardware, the reference rows) and writes the dated record under
 `docs/benchmarks/`. The workloads are listed at the top of this guide;
-`workloads-validate` refuses a row whose model is a legacy artifact. The
+`workloads-validate` refuses a row whose model is an archived artifact. The
 speculative matrix of the 2026-09-21 record is `make spec-matrix
 ARGS='--model qwen38 --contexts 512,4096,code --sampling greedy,instruct
 --drafts 2,4,7 --baseline'` ([§ The speed loop](#the-speed-loop)).

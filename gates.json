@@ -16,11 +16,11 @@
   "gemma4_26b_a4b": {
    "path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf",
    "mmproj": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/mmproj-BF16.gguf",
-   "note": "gemma-4-26b-a4b is legacy since 2026-11-20; its gates stay as the only real-model check of Gemma 4's mixture-of-experts path"
+   "note": "gemma-4-26b-a4b is archived since 2026-11-20; its gates stay as the only real-model check of Gemma 4's mixture-of-experts path"
   },
   "gemma4_26b_a4b_mtp": {
    "path": "~/.nuclis/models/unsloth/gemma-4-26B-A4B-it-qat-GGUF/MTP/mtp-gemma-4-26B-A4B-it-Q4_0.gguf",
-   "note": "gemma-4-26b-a4b is legacy since 2026-11-20; its gates stay as the only real-model check of Gemma 4's mixture-of-experts path"
+   "note": "gemma-4-26b-a4b is archived since 2026-11-20; its gates stay as the only real-model check of Gemma 4's mixture-of-experts path"
   },
   "gemma4_e4b": {
    "artifact": "gemma-4-e4b-qat"

@@ -231,6 +231,40 @@ def link(source, target):
     return f"[{label}]({rel}{'#' + anchor if anchor else ''})"
 
 
+KIND_TITLES = {
+    "generation": "Chat",
+    "decision": "Decision",
+    "embedding": "Embedding",
+    "speech": "Speech",
+    "transcription": "Transcription",
+}
+# What a plain pull fetches with the main file (catalog.pulledWith).
+PULLED_WITH = ("main", "codec")
+
+
+def models_by_kind(catalog):
+    """One table per kind, its default first, then a line naming the archived entries."""
+    parts = []
+    for kind, title in KIND_TITLES.items():
+        entries = [a for a in catalog["artifacts"] if a["kind"] == kind and a["support"] != "archived"]
+        entries.sort(key=lambda a: a["role"] != "default")
+        if not entries:
+            raise ValueError(f"no artifacts of kind {kind}")
+        rows = []
+        for a in entries:
+            name = f"`{a['name']}`" + (" (default)" if a["role"] == "default" else "")
+            what = a["summary"] + (f"; fine-tuned from `{a['base']}`" if a.get("base") else "")
+            if a["support"] == "preview":
+                what = f"*preview:* {what}"
+            pulled = sum(f["size"] for f in a["files"] if f["role"] in PULLED_WITH)
+            rows.append([name, what, f"{pulled / 1e9:.1f} GB"])
+        parts.append(f"**{title}**\n\n" + table(["Name", "What it is", "Size"], rows))
+    archived = [f"`{a['name']}`" for a in catalog["artifacts"] if a["support"] == "archived"]
+    if archived:
+        parts.append("Archived, still pulled and run by name; not offered: " + ", ".join(archived) + ".")
+    return "\n\n".join(parts)
+
+
 def shape_kind(shape):
     """A workload shape's kind; a shape with a `base` and a `pair` is a speculative pair."""
     return shape.get("kind") or ("speculative pair" if "pair" in shape else "")
@@ -257,10 +291,12 @@ def render(name, arg, source, facts, manifests):
             if arg and a["kind"] != arg:
                 continue
             main = next((f for f in a["files"] if f["role"] == "main"), a["files"][0])
-            rows.append([f"`{a['name']}`", a["kind"], a["quantization"], size(main["size"]), a["status"]])
+            rows.append([f"`{a['name']}`", a["kind"], a["role"], a["support"], a["quantization"], size(main["size"])])
         if not rows:
             raise ValueError(f"no artifacts of kind {arg}")
-        return table(["Name", "Kind", "Encoding", "Main file", "Status"], rows)
+        return table(["Name", "Kind", "Role", "Support", "Encoding", "Main file"], rows)
+    if name == "models-by-kind":
+        return models_by_kind(catalog)
     if name == "gates-by-tier":
         tiers = {}
         for g in gates["gates"]:
@@ -381,6 +417,35 @@ class SelfTest(unittest.TestCase):
     def test_unknown_block(self):
         with self.assertRaises(ValueError):
             rewrite("<!-- gen:nothing -->\n<!-- /gen -->", "docs/a.md", {}, ({}, {}, {}))
+
+    def test_models_by_kind(self):
+        def entry(name, kind, role, support, base=None):
+            files = [{"role": "main", "size": 2_000_000_000}, {"role": "mmproj", "size": 9}]
+            return {
+                "name": name,
+                "kind": kind,
+                "role": role,
+                "support": support,
+                "summary": name,
+                "base": base,
+                "files": files,
+            }
+
+        kinds = ("generation", "decision", "embedding", "speech", "transcription")
+        catalog = {
+            "artifacts": [
+                entry("x", "generation", "extra", "preview", "o/base"),
+                entry("old", "generation", "extra", "archived"),
+            ]
+            + [entry(k, k, "default", "verified") for k in kinds]
+        }
+        out = models_by_kind(catalog)
+        self.assertTrue(out.startswith("**Chat**\n\n| Name | What it is | Size |\n| --- | --- | --- |\n"))
+        self.assertIn(
+            "| `generation` (default) | generation | 2.0 GB |\n| `x` | *preview:* x; fine-tuned from `o/base` |", out
+        )
+        self.assertTrue(out.endswith("\n\nArchived, still pulled and run by name; not offered: `old`."))
+        self.assertEqual(out.count("(default)"), len(kinds))
 
     def test_link(self):
         self.assertEqual(

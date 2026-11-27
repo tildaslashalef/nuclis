@@ -68,7 +68,7 @@ as a cross-check, never copied.
 - `ecapa.zig`: Qwen3-TTS Base's speaker encoder, CPU only: `Front`, the
   24 kHz mel `extract_speaker_embedding` computes, and `Encoder`, the
   ECAPA-TDNN to one embedding at the talker's width (ungated: the Base
-  checkpoints are legacy;
+  checkpoints are archived;
   [qwen3-tts.md § The speaker encoder](../benchmarks/record/qwen3-tts.md#the-speaker-encoder-2026-10-29)).
 - `qwen3_codec_encoder.zig`: Qwen3-TTS's codec encoder, CPU only, 24 kHz
   samples to frames of 16 codes (the Base's reference codes): `bind` (its

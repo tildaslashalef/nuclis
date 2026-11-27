@@ -184,7 +184,7 @@
 <section class="sec" id="numbers">
   <div class="wrap">
     <h2>Honest numbers, one machine.</h2>
-    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19 and 2026-11-20. Two models, two jobs: Qwen3.8-27B is the capable one, a dense 27B that decodes 8 to 11 tokens a second on its own and passes every task on the agent's list; Gemma 4 E4B is the small brain, 53 a second on a short prompt and still 33 at a 64K one. Every record is measured against nuclis's own previous one, never against another engine.</p>
+    <p class="sec-lede">An M4 Pro with 48 GB, measured on 2026-11-19, 2026-11-20, and 2026-11-27. Qwen3.8-27B is the capable one, a dense 27B that decodes 8 to 11 tokens a second on its own and passes every task on the agent's list; Inkling 2 Mini, a looped mixture of experts, decodes 18 to 26 and passes 34 of 36 runs in half the time; Gemma 4 E4B is the small brain, 53 a second on a short prompt and still 33 at a 64K one. Every record is measured against nuclis's own previous one, never against another engine.</p>
 
     <div class="chart-card">
       <div class="chart-head">
@@ -237,7 +237,7 @@
 <section class="sec" id="models">
   <div class="wrap">
     <h2>Pinned to the byte.</h2>
-    <p class="sec-lede">One model per job, each pinned to a repository, a commit and a SHA-256. You get the exact bytes that were measured, or you get an error. Both chat models read images and bring their own drafter.</p>
+    <p class="sec-lede">One model per job, each pinned to a repository, a commit and a SHA-256. You get the exact bytes that were measured, or you get an error. Every chat model reads images; Qwen3.8 and Gemma 4 bring their own drafter.</p>
     <div class="shelf">
       <article>
         <h3>Qwen3.8 27B</h3>
@@ -251,7 +251,7 @@
       </article>
       <article>
         <h3>The rest of the set</h3>
-        <p>Laya and clef-flash for typed answers, EmbeddingGemma 2 for vectors, Qwen3-TTS for a voice, Nemotron ASR for ears.</p>
+        <p>Inkling 2 Mini, a looped mixture of experts, for chat; Laya and clef-flash for typed answers, EmbeddingGemma 2 for vectors, Qwen3-TTS and VoiceTut-TTS for a voice, Nemotron ASR for ears.</p>
         <footer><code>nuclis model ls --available</code></footer>
       </article>
       <article class="shelf-more">
@@ -420,6 +420,7 @@ cd nuclis &amp;&amp; make metal
   ],
   "today": [
     { "model": "Qwen3.8-27B", "decode": { "512": 11.16, "4096": 9.23, "16384": 9.02, "32639": 9.17, "65407": 8.41 }, "prefill": { "512": 93.16, "4096": 84.02, "16384": 77.48, "32639": 73.17, "65407": 61.19 } },
+    { "model": "Inkling 2 Mini", "decode": { "512": 25.63, "4096": 26.40, "16384": 21.37, "32639": 21.10, "65407": 18.51 }, "prefill": { "512": 282.43, "4096": 325.98, "16384": 274.39, "32639": 281.95, "65407": 232.03 } },
     { "model": "Gemma 4 E4B QAT", "decode": { "512": 53.19, "4096": 50.13, "16384": 47.22, "32639": 41.90, "65407": 33.03 }, "prefill": { "512": 585.95, "4096": 551.42, "16384": 500.96, "32639": 437.29, "65407": 337.20 } }
   ]
 }

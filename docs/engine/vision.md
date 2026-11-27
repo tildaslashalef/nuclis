@@ -226,7 +226,7 @@ tokens, after the same smart size and PAD_CEIL bicubic letterbox as
 Qwen's (align 48; `gemma4.gridFor`). The file's projector type
 (`clip.vision.projector_type`) picks the adapter.
 
-**The unified embedder (`gemma4uv`, the legacy 12B).** `mmproj-BF16.gguf`,
+**The unified embedder (`gemma4uv`, the archived 12B).** `mmproj-BF16.gguf`,
 175 MB: ten vision tensors (the file's audio pair is not loaded). The patch
 is a whole 48-pixel token. Per token: its 6,912 F32 pixel values (mean 0,
 std 1) → LayerNorm `patch_norm.1` (eps 1e-5) → `patch_embd` (F32
@@ -342,7 +342,7 @@ both executors' `prefillVision` feed a span's rows the features in place of
 the embedding (the Metal plan chunks text runs and spans separately), and
 the weightless input norm applies to them as to token rows.
 
-**Gates and limits.** The family is legacy and its vision gates are
+**Gates and limits.** The family is archived and its vision gates are
 retired; `fixtures/muse-glimmer-synthetic/patches.f32` stays for a unit
 test of the patch embedding. A full-size image costs tens of seconds
 before the first token; a lower `image_max_tokens` is the lever. Why its

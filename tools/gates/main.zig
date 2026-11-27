@@ -250,7 +250,7 @@ fn loadManifest(arena: std.mem.Allocator, io: std.Io, err: *std.Io.Writer) !mani
     const index_doc = try manifest.parse(arena, index_text);
     // Artifacts resolve first, so `validate` sees the paths they name.
     const resolved = try catalog_index.resolve(arena, &doc, index_doc);
-    const problems = try std.mem.concat(arena, []const u8, &.{ resolved, try catalog_index.coverage(arena, doc, index_doc), try manifest.validate(arena, doc) });
+    const problems = try std.mem.concat(arena, []const u8, &.{ try catalog_index.validate(arena, index_doc), resolved, try catalog_index.coverage(arena, doc, index_doc), try manifest.validate(arena, doc) });
     if (problems.len > 0) {
         for (problems) |problem| try err.print("gates.json: {s}\n", .{problem});
         return error.InvalidManifest;

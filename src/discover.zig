@@ -192,7 +192,7 @@ pub fn plan(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, regi
         if (row.artifact) |name| {
             const a = catalog.find(name).?;
             if (row.registered != null or registry.find(name) != null) continue;
-            if (a.kind != .generation or !a.status.written() or main.status == .mismatch) continue;
+            if (a.kind != .generation or !a.written() or main.status == .mismatch) continue;
             try registered.append(arena, .{ .name = name, .path = main.path, .kind = .generation, .artifact = name, .architecture = a.architecture, .entry = config.registryEntry(a) });
             continue;
         }
@@ -223,7 +223,7 @@ pub fn plan(arena: Allocator, gpa: Allocator, io: std.Io, root: []const u8, regi
 /// already follows the index and is left alone; a companion moves only to
 /// a file on disk; a draft verdict follows the variant the entry chose.
 fn refreshEntry(arena: Allocator, name: []const u8, e: config.ModelEntry, a: *const catalog.Artifact, row: model.Installed, refreshed: *std.ArrayList(Refresh), behind: *std.ArrayList(Behind)) !void {
-    if (a.status == .legacy) return;
+    if (a.support == .archived) return;
     const fresh = config.registryEntry(a);
     if (e.revision) |r| if (!std.mem.eql(u8, r, a.revision)) try behind.append(arena, .{ .name = name, .revision = r, .index = a.revision });
     if (fresh.mmproj) |p| if (installedAs(row, .mmproj, null)) try note(arena, refreshed, name, "mmproj", e.mmproj, p);
@@ -239,7 +239,7 @@ fn refreshEntry(arena: Allocator, name: []const u8, e: config.ModelEntry, a: *co
     if (a.defaults.thinking_budget) |b| try note(arena, refreshed, name, "agent.thinking_budget", e.agent.thinking_budget, b);
 }
 
-fn installedAs(row: model.Installed, role: catalog.Role, variant: ?[]const u8) bool {
+fn installedAs(row: model.Installed, role: catalog.FileRole, variant: ?[]const u8) bool {
     for (row.files) |f| if (f.role == role) {
         if (variant == null or (f.variant != null and std.mem.eql(u8, f.variant.?, variant.?))) return true;
     };

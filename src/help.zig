@@ -374,7 +374,7 @@ fn overview(p: *Page, version: []const u8) !void {
     try row(p, "--json", "machine-readable output, where a command reports");
 
     try heading(p, "Examples:");
-    try example(p, "nuclis model pull --catalogue", "every current model with its companions");
+    try example(p, "nuclis model pull --catalogue", "every default model with its companions");
     try example(p, "nuclis config init", "the config file, from what is installed");
     try example(p, "nuclis agent", "chat with the configured model");
 
@@ -995,7 +995,7 @@ fn model(p: *Page) !void {
     try code(p, "nuclis model ls [-l] [--available [--all]] [--json]");
     try code(p, "nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]");
     try code(p, "                  [--force] [--json]");
-    try code(p, "nuclis model pull --catalogue [--force] [--json]");
+    try code(p, "nuclis model pull --catalogue [--extra] [--force] [--json]");
     try code(p, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(p, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(p, "nuclis model inspect <name> [--metadata] [--tensors] [--tensor <name>]");
@@ -1008,7 +1008,8 @@ fn model(p: *Page) !void {
     try heading(p, "Commands:");
     try row(p, "ls", "what is installed under ~/.nuclis/models, one line");
     try more(p, "a model, by kind; a file outside the index is a row");
-    try more(p, "of its own; --available lists the index instead");
+    try more(p, "of its own; --available lists the index instead, by");
+    try more(p, "kind, its default first (ROLE: default or extra)");
     try row(p, "pull", "fetch an index model, a registry entry, or any");
     try more(p, "artifact of a repository, verified by digest and");
     try more(p, "published atomically, with a safetensors set's files");
@@ -1025,13 +1026,16 @@ fn model(p: *Page) !void {
     try heading(p, "Options:");
     try row(p, "-l, --long", "ls: each file's commit and digest (12 characters),");
     try more(p, "its path, and the defaults the model runs with");
-    try row(p, "--available", "ls: the index, pulled or not; --all adds legacy");
+    try row(p, "--available", "ls: the index, pulled or not; SUPPORT marks a row");
+    try more(p, "not verified; --all adds the archived entries");
     try row(p, "--with mmproj,draft", "also fetch (rm: also delete) those companions;");
     try more(p, "draft=<variant> picks another drafter (qwen3.8-27b:");
     try more(p, "mtp, dflash2); mtp is the old name of draft");
     try row(p, "--all", "every companion the entry names, one per role;");
     try more(p, "with --variants, every draft variant");
-    try row(p, "--catalogue", "pull: every current entry, with --all (about 42 GB)");
+    try row(p, "--catalogue", "pull: each kind's default, with --all (about 29 GB)");
+    try row(p, "--extra", "with --catalogue: every extra not archived too");
+    try more(p, "(about 33 GB more)");
     try row(p, "--file <name>", "which weight file (.gguf, .safetensors); required");
     try more(p, "when several; its support files come with it");
     try row(p, "--revision <rev>", "a branch, tag, or commit; default main");
@@ -1051,7 +1055,7 @@ fn model(p: *Page) !void {
 
     try heading(p, "Examples:");
     try example(p, "nuclis model pull qwen3.8-27b --all", "the default model, its projector and drafter");
-    try example(p, "nuclis model pull --catalogue", "every current model, then nuclis config init");
+    try example(p, "nuclis model pull --catalogue", "the defaults, then nuclis config init");
     try code(p, "nuclis model pull unsloth/gemma-4-12b-it-GGUF \\");
     try example(p, "    --file gemma-4-12b-it-UD-Q4_K_XL.gguf --register gemma-fast", "any file of a repository, under a name");
     try code(p, "nuclis model pull convaiinnovations/laya --file model.safetensors");

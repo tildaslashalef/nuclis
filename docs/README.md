@@ -110,8 +110,8 @@ generated block.
 | [README.md](models/README.md) | Bringing a new model family in: the order of work, the gates, mistakes already made |
 | [catalogue.md](models/catalogue.md) | Where the files come from, quantization conventions, companion files, the models directory |
 | [qwen3.8.md](models/qwen3.8.md) | Qwen3.8-27B, the dense model the kernels were first tuned on: the architecture at a glance, where each of its facts lives, validation, the re-made file |
-| [gemma4.md](models/gemma4.md) | Gemma 4 (26B-A4B, E4B, and the legacy 12B): artifact facts, forward pass, profile |
-| [muse-glimmer.md](models/muse-glimmer.md) | Muse Glimmer 30B (legacy): artifact facts, the bring-up record |
+| [gemma4.md](models/gemma4.md) | Gemma 4 (E4B, and the archived 26B-A4B and 12B): artifact facts, forward pass, profile |
+| [muse-glimmer.md](models/muse-glimmer.md) | Muse Glimmer 30B (archived): artifact facts, the bring-up record |
 | [bonsai.md](models/bonsai.md) | Bonsai 2 27B: the ternary file and its fork |
 | [saluki.md](models/saluki.md) | Underdog Saluki 27B: Qwen3.8-27B in seven 2-bit encodings, its lineage, memory, and the last record against llama.cpp |
 | [laya.md](models/laya.md) | Laya: the decision encoder behind `nuclis decide` |

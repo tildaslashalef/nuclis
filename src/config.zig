@@ -173,9 +173,10 @@ pub const Config = struct {
     pub const Engine = struct {
         /// A registry entry name, a catalogue name (`src/catalog.zig`), or a
         /// path relative to `<root>/models` unless absolute, in that order
-        /// (`paths.modelPath`). The flagship: with its drafter the dense
-        /// 27B codes at about 25 tokens/s on the target machine.
-        model: []const u8 = "qwen3.8-27b",
+        /// (`paths.modelPath`). Defaults to the catalogue's chat default,
+        /// the flagship: with its drafter the dense 27B codes at about 25
+        /// tokens/s on the target machine.
+        model: []const u8 = catalog.defaultFor(.generation).name,
         backend: Backend = if (inference.metal.enabled) .metal else .cpu,
         /// 64K, the supported ceiling: the agent's long tasks were tuned in
         /// this window, and the flagship's session is about 4.5 GB in it
@@ -229,20 +230,23 @@ pub const Config = struct {
     pub const Decide = struct {
         /// The decision checkpoint `nuclis decide` opens: a registry entry
         /// of kind `decision`, a decision catalogue name, or a directory
-        /// (relative to `<root>/models` unless absolute).
-        model: []const u8 = "laya",
+        /// (relative to `<root>/models` unless absolute). Defaults to the
+        /// catalogue's decision default.
+        model: []const u8 = catalog.defaultFor(.decision).name,
     };
     pub const Embed = struct {
         /// The embedding model `nuclis embed` opens: a registry entry of
         /// kind `embedding`, an embedding catalogue name, or a GGUF path
-        /// (relative to `<root>/models` unless absolute).
-        model: []const u8 = "embeddinggemma-2",
+        /// (relative to `<root>/models` unless absolute). Defaults to the
+        /// catalogue's embedding default.
+        model: []const u8 = catalog.defaultFor(.embedding).name,
     };
     pub const Speech = struct {
         /// The speech model `nuclis speak` and `POST /v1/audio/speech`
         /// open: a registry entry of kind `speech`, a speech catalogue
-        /// name, or (for `speak`) a checkpoint directory.
-        model: []const u8 = "qwen3-tts-1.7b-customvoice",
+        /// name, or (for `speak`) a checkpoint directory. Defaults to the
+        /// catalogue's speech default.
+        model: []const u8 = catalog.defaultFor(.speech).name,
         /// The speaker a request that names none gets.
         voice: []const u8 = "sohee",
     };
@@ -250,7 +254,8 @@ pub const Config = struct {
         /// The transcription model `nuclis transcribe` and the server open:
         /// a registry entry of kind `transcription`, a transcription
         /// catalogue name, or (for `transcribe`) a checkpoint directory.
-        model: []const u8 = "nemotron-asr-0.6b",
+        /// Defaults to the catalogue's transcription default.
+        model: []const u8 = catalog.defaultFor(.transcription).name,
     };
     pub const Serve = struct {
         /// The address `nuclis serve` listens on: an IP literal or
@@ -1802,6 +1807,19 @@ test "file values override defaults per key and the source is recorded" {
     try std.testing.expectEqual(@as(u64, 1 << 30), uploads.config.serve.transcription_bytes);
     try std.testing.expectError(error.InvalidConfigValue, fromText(alloc, "{ \"schema_version\": 1, \"serve\": { \"transcription_bytes\": 0 } }", "zero.json", &diag));
     try std.testing.expect(std.mem.indexOf(u8, diag.message(), "serve.transcription_bytes must be 1..") != null);
+}
+
+test "each per-kind model key defaults to the catalogue's default of that kind" {
+    const c: Config = .{};
+    try std.testing.expectEqualStrings(catalog.defaultFor(.generation).name, c.engine.model);
+    try std.testing.expectEqualStrings(catalog.defaultFor(.decision).name, c.decide.model);
+    try std.testing.expectEqualStrings(catalog.defaultFor(.embedding).name, c.embed.model);
+    try std.testing.expectEqualStrings(catalog.defaultFor(.speech).name, c.speech.model);
+    try std.testing.expectEqualStrings(catalog.defaultFor(.transcription).name, c.transcribe.model);
+    // The default speaker is one of the speech default's.
+    for (catalog.defaultFor(.speech).traits.speakers) |s| {
+        if (std.mem.eql(u8, s, c.speech.voice)) break;
+    } else return error.TestUnexpectedResult;
 }
 
 test "the voice keys: speech and transcription models, the default speaker, pins as a list or a string" {

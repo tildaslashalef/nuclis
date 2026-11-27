@@ -152,15 +152,18 @@ A null sampling key takes the profile's value. agent.instructions is auto
 ```
 <!-- /gen -->
 
-Each section's defaults and meanings:
+Each section's defaults and meanings. Every per-kind model key
+(`engine.model`, `decide.model`, `embed.model`, `speech.model`,
+`transcribe.model`) defaults to the catalogue's `default` entry of that
+kind ([models/catalogue.md § The catalogue](../models/catalogue.md#the-catalogue)):
 
 ### `engine`
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `model` | `gemma-4-26b-a4b` (`config init` writes the first installed chat model when that one is absent) | a registry entry, an index name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
+| `model` | `qwen3.8-27b`, the chat default (`config init` writes the first installed chat model when that one is absent) | a registry entry, an index name, or a path (under `~/.nuclis/models` unless absolute), tried in that order; flag `--model` |
 | `backend` | `metal` (`cpu` in a build without Metal) | where the model runs |
-| `ctx_size` | `32768` | the context window in tokens, from 1 to the build's ceiling (131,072 in a release build; `nuclis --help` prints it). 65,536 is the supported ceiling; 131,072 is accepted, unmeasured by the gates, and needs a more powerful machine. A length past the model file's own context length is refused |
+| `ctx_size` | `65536` | the context window in tokens, from 1 to the build's ceiling (131,072 in a release build; `nuclis --help` prints it). 65,536 is the supported ceiling; 131,072 is accepted, unmeasured by the gates, and needs a more powerful machine. A length past the model file's own context length is refused |
 | `kv_precision` | `f16` | the attention cache on the GPU: `f16` halves its memory and the bytes read per token; `q8_0` (blocks of 32 eight-bit codes and an F16 scale) about halves them again, for long contexts; `f32` otherwise. The CPU always keeps F32. Flag `--kv` |
 
 ### `generation`
@@ -207,11 +210,11 @@ on the M4 Pro; on another machine `make spec-matrix` measures them again.
 
 | Key | Default | Meaning |
 | --- | --- | --- |
-| `decide.model` | `laya` | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
-| `embed.model` | `embeddinggemma-2` | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
-| `speech.model` | `qwen3-tts-1.7b-customvoice` | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
-| `speech.voice` | `ryan` | the voice a `speak` or speech request that names none gets: on CustomVoice one of the model's speakers (Qwen's checkpoints have nine; a fine-tune may have its own), on a Base a saved voice (`nuclis voice list`); VoiceDesign ignores it |
-| `transcribe.model` | `nemotron-asr-0.6b` | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
+| `decide.model` | `laya`, the decision default | the decision model `nuclis decide` opens, and `nuclis serve` for a decision request that names none: a registry entry of kind `decision`, a decision catalogue name, or a directory. A text model is refused |
+| `embed.model` | `embeddinggemma-2`, the embedding default | the embedding model `nuclis embed` opens: a registry entry of kind `embedding`, an embedding catalogue name, or a GGUF path. Another kind's name is refused |
+| `speech.model` | `qwen3-tts-1.7b-customvoice`, the speech default | the speech model `nuclis speak` opens, and `POST /v1/audio/speech` for a request that names none: a registry entry of kind `speech`, a speech catalogue name (`qwen3-tts-1.7b-customvoice`, `qwen3-tts-0.6b-customvoice`), or (for `speak`) a checkpoint directory. Another kind's name is refused |
+| `speech.voice` | `sohee` | the voice a `speak` or speech request that names none gets: on CustomVoice one of the model's speakers (Qwen's checkpoints have nine; a fine-tune may have its own), on a Base a saved voice (`nuclis voice list`); VoiceDesign ignores it |
+| `transcribe.model` | `nemotron-asr-0.6b`, the transcription default | the transcription model `nuclis transcribe` opens, and the server's default: a registry entry of kind `transcription`, the catalogue name, or (for `transcribe`) a checkpoint directory |
 | `serve.host` | `127.0.0.1` | an IP literal or `localhost`; beyond loopback the API is reachable from the network with no authentication. Flag `--host` |
 | `serve.port` | `9000` | flag `--port` |
 | `serve.log` | `true` | a line per request on stdout; `--quiet` turns it off |
@@ -287,10 +290,10 @@ pull --register`, never by `config set`.
 `nuclis model ls` lists; `nuclis config sync [--prune] [--dry-run]
 [--json]` brings an existing file up to date the same way:
 
-- **Index models:** every installed current chat model gets its index
-  entry (repository, file, commit, companions, the index's speculation
-  verdict). Legacy models and the other kinds need no entry: their names
-  resolve through the index.
+- **Index models:** every installed verified chat model, default or
+  extra, gets its index entry (repository, file, commit, companions, the
+  index's speculation verdict). Preview and archived models and the other
+  kinds need no entry: their names resolve through the index.
 - **Skipped:** files an entry already locates, and companions (the files
   `model ls` lists under a model: by sidecar role, or a name carrying
   `mmproj`, `mtp`, or `dflash`). Every other skipped file is reported with

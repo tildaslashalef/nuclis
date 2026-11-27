@@ -614,6 +614,12 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
         const removes = options.model_action == .rm;
         // After a name, `--catalogue` is a second subject, not a flag.
         if (pulls and std.mem.eql(u8, flag, "--catalogue")) return error.ConflictingOptions;
+        if (pulls and std.mem.eql(u8, flag, "--extra")) {
+            if (!p.catalogue) return error.ConflictingOptions;
+            if (p.extra) return error.DuplicateOption;
+            p.extra = true;
+            continue;
+        }
         if (pulls and std.mem.eql(u8, flag, "--force")) {
             if (p.force) return error.DuplicateOption;
             p.force = true;
@@ -930,7 +936,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         },
         else => return err,
     };
-    if (options.command != .inspect and options.command != .validate and options.command != .tokenize) experimentalNotice(path);
+    if (options.command != .inspect and options.command != .validate and options.command != .tokenize) previewNotice(path);
     // A file named by path takes the settings of the registry entry that
     // locates it, as its name would.
     const model_name: ?[]const u8 = if (options.model) |m| (try paths.registryName(alloc, path, root, loaded.config.models)) orelse m else null;
@@ -1203,19 +1209,15 @@ fn selectAdapter(document: *const inference.gguf.Document, diag: *Diagnostic) !i
     };
 }
 
-/// After `config init`: what the file says, the state of every catalogue
-/// model under the root, and the command to run next (a fresh root has
-/// nothing pulled yet).
-/// Names the registry entries that still say `mtp`, which reads as
-/// `draft` for one minor release.
-/// A warning on stderr naming the entries that still spell `mtp`.
-/// On stderr, apart from the result: the model about to run is
-/// experimental, and why.
-fn experimentalNotice(path: []const u8) void {
+/// On stderr, apart from the result: the model about to run is a preview,
+/// and why.
+fn previewNotice(path: []const u8) void {
     var buffer: [512]u8 = undefined;
     if (catalog.ofPath(path)) |a| if (catalog.notice(&buffer, a)) |line| std.log.warn("{s}", .{line});
 }
 
+/// A warning on stderr naming the registry entries that still spell `mtp`,
+/// which reads as `draft` for one minor release.
 fn oldMtpNotice(models: config.Models) void {
     if (models.old_mtp.len == 0) return;
     var buffer: [256]u8 = undefined;
@@ -1582,10 +1584,16 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "rm", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "pull", "--file", "x.gguf" }));
-    // --catalogue stands in for the name and takes only --force and --json.
+    // --catalogue stands in for the name and takes only --extra, --force,
+    // and --json; --extra goes with nothing else.
     const whole = try parseArgs(&.{ "model", "pull", "--catalogue", "--force", "--json" });
-    try std.testing.expect(whole.pull.catalogue and whole.pull.force and whole.json and whole.pull.repo.len == 0);
+    try std.testing.expect(whole.pull.catalogue and whole.pull.force and whole.json and whole.pull.repo.len == 0 and !whole.pull.extra);
+    try std.testing.expect((try parseArgs(&.{ "model", "pull", "--catalogue", "--extra" })).pull.extra);
+    try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "--catalogue", "--extra", "--extra" }));
+    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "ls", "--extra" }));
     for ([_][]const []const u8{
+        &.{ "model", "pull", "laya", "--extra" },
+        &.{ "model", "pull", "a/b", "--extra" },
         &.{ "model", "pull", "--catalogue", "--all" },
         &.{ "model", "pull", "--catalogue", "--with", "draft" },
         &.{ "model", "pull", "--catalogue", "--revision", "main" },
@@ -1625,7 +1633,11 @@ test "model ls runs against NUCLIS_HOME and needs no configuration file" {
     var environ: std.process.Environ.Map = .init(alloc);
     defer environ.deinit();
     try environ.put("NUCLIS_HOME", root);
-    // A broken configuration must not block model commands.
+    // A broken configuration must not block model commands. Its warning is
+    // expected; above `warn` it stays off stderr, where the build runner
+    // would print the run as a failed command.
+    std.testing.log_level = .err;
+    defer std.testing.log_level = .warn;
     try tmp.dir.writeFile(io, .{ .sub_path = "nuclis.json", .data = "{ \"schema_version\": 1, \"engine\": { \"ctx\": 1 } }" });
     var out: std.Io.Writer.Allocating = .init(alloc);
     defer out.deinit();

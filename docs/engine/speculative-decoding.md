@@ -19,8 +19,8 @@ follow the record
 | --- | --- | --- |
 | Qwen3.8-27B | on at draft 7 | the DFlash2 drafter; `--draft mtp` selects its `nextn` block, also on at 7 |
 | Gemma 4 E4B | on at draft 6 | its assistant head |
-| Gemma 4 26B-A4B (legacy) | on at draft 4 | its assistant head |
-| Gemma 4 12B QAT (legacy) | on at draft 5 | its assistant head |
+| Gemma 4 26B-A4B (archived) | on at draft 4 | its assistant head |
+| Gemma 4 12B QAT (archived) | on at draft 5 | its assistant head |
 | Muse Glimmer | on at draft 6 | its DFlash drafter |
 
 ## The draft contract

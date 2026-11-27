@@ -2,7 +2,7 @@
 # Muse Glimmer 30B
 
 Meta's dense 30B chat model (`general.architecture = muse-glimmer`):
-catalogue entry `muse-glimmer-30b`, **legacy** since 2026-11-10. It still
+catalogue entry `muse-glimmer-30b`, **archived** since 2026-11-10. It still
 pulls, verifies, and runs by name, but nothing gates it. The file is
 `unsloth/Muse-Glimmer-30B-GGUF` `Muse-Glimmer-30B-UD-Q4_K_XL.gguf`
 (15.9 GB), with a vision projector (`mmproj-kquant.gguf`, run by
@@ -95,7 +95,7 @@ the ATEM tool protocol in
 
 ## What is verified
 
-No gates: the entry is legacy. The record holds the bring-up comparisons
+No gates: the entry is archived. The record holds the bring-up comparisons
 (CPU and Metal within the reference's traces; F16 cache bounds 0.1 / 3e-4,
 set by the large late-layer residual stream).
 

@@ -67,12 +67,16 @@ the catalogue's index and, optionally, a `file`: `main` (the default),
 `directory` (a safetensors checkpoint's folder). The runner reads the
 index from `src/catalog.json`, which `make index` writes from
 `src/catalog.zig` and a unit test holds equal to it (the runner imports
-none of nuclis, and CI's docs job has no Zig). A literal `path` is
-allowed only with a `note` saying why the file is not in the index. The
-manifest is invalid when a model names a legacy artifact, or when a
-current or experimental chat artifact has no gate. An experimental
-artifact's gates skip without its file like any other, so `--strict` fails
-on them. The manifest's `retired` list names
+none of nuclis, and CI's docs job has no Zig) and refuses one whose
+`schema_version` is not 2 or whose entry has a `role` or `support` it does
+not know. The manifest is invalid when a model names an archived
+artifact, or when a verified or preview artifact of any kind has no gate:
+every verified or preview artifact has a gate. A literal `path` is
+allowed only with a `note` saying why the file is not named through the
+index. It is also the one sanctioned way an archived artifact's file
+keeps a gate: the Gemma 4 26B-A4B's two models do so, their `note`
+saying why. A preview artifact's gates skip without its file like any
+other, so `--strict` fails on them as on a verified one's. The manifest's `retired` list names
 fixture prefixes under `tests/fixtures/` that must not come back; the
 tree lint fails on any tracked file under one.
 
@@ -161,15 +165,15 @@ What can break independently, and what protects it. *Model-free* means
 | DeltaNet, Hadamard, RoPE, norms, softcap, sampling kernels | fixtures | — |
 | Metal `layerNorm`, `addBiasRows` | strided rows against the CPU (`checkVisionNorms`) | — |
 | Metal attention over packed sequences, the erf GeGLU (Laya) | packed sequences and windows against F64 (`checkSegmentAttention`), fused rows against the CPU (`checkGeluErfRows`) | `laya-metal` (the plan, its batching, and its cleanup) |
-| Laya multilingual: mmBERT's geometry (22 layers of 768, intermediate 1,152), positions 512 to 1,023, the checkpoint's own special tokens | — | none (multilingual Laya is legacy in the index) |
+| Laya multilingual: mmBERT's geometry (22 layers of 768, intermediate 1,152), positions 512 to 1,023, the checkpoint's own special tokens | — | none (multilingual Laya is archived in the index) |
 | experts (MoE) | Metal Q4_0 chains; CPU FFN on a 2×2 F32 tensor | `gemma4-26b-a4b-*` |
 | Qwen 3.5 plan (DeltaNet, gated attention, MTP block) | the runtime's admission tests | `qwen38-*` |
-| Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | none (Bonsai is legacy in the index) |
+| Qwen 3.5 with Hadamard rotations, PTQ1_0, BF16 | decoders, kernels | none (Bonsai left the index) |
 | Gemma 4: sliding/global, softcap | — | any Gemma file |
 | Gemma 4: shared KV, per-layer embeddings, own V on global layers, window 512 | — | `gemma4-e4b-*` |
 | Gemma 4: K=V global layers, window 1024, the `gemma4` profile | — | `gemma4-26b-a4b-*` |
-| Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | none (the 12B QAT file is legacy in the index; the same code as the 26B's 8:1) |
-| Muse Glimmer plan, its tokenizer (GPT-4o splitter) and projector | — | none (legacy in the index) |
+| Gemma 4: one global KV head (16:1), 48 layers | the 16:1 attention geometry | none (the 12B QAT file is archived in the index; the same code as the 26B's 8:1) |
+| Muse Glimmer plan, its tokenizer (GPT-4o splitter) and projector | — | none (archived in the index) |
 | session layout: recurrent with the verify tape (Metal, drafter) | session unit tests | `qwen38-generation-metal` |
 | session layout: recurrent without a tape (rewind, replay) | session unit tests | every CPU generation gate |
 | session layout: attention only (truncate) | session unit tests | any Gemma generation gate |
@@ -182,7 +186,7 @@ What can break independently, and what protects it. *Model-free* means
 | past 512 tokens and the sliding windows | — | `verify-long` |
 | speech, audio, and embeddings: Qwen3-TTS, Nemotron ASR, EmbeddingGemma 2, Gemma 4 audio | — | their own gates (`qwen3-tts-*`, `nemotron-asr-*`, `embeddinggemma-*`, `gemma4-e4b-audio-*`) |
 
-Not covered by any gate: the 26B-A4B's assistant head, the legacy speech
+Not covered by any gate: the 26B-A4B's assistant head, the archived speech
 and decision checkpoints (Drama 3, Qwen3-TTS Base and VoiceDesign,
 multilingual Laya), and the PQ2_0 encoding (decoder and kernel
 fixtures only). On Metal a speculative greedy divergence is printed, not

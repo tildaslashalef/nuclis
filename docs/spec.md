@@ -76,34 +76,35 @@ paths (§ 5.9–§ 5.11). Everything else is deferred (§ 10).
 
 The index (`src/catalog.json`, read by `src/catalog.zig`) is the list of
 supported artifacts. An entry pins the Hub repository, revision, and every
-file's SHA-256 and size; its kind, profile, and lifecycle; and its
-companions by role, each draft with the speculative verdict a measurement
-set. A `current` entry is gated and written by `config init`; an
-`experimental` one is gated too (a skip fails `--strict`) and runs by name,
-but `config init` never writes it and a run prints its reason; a `legacy`
-one pulls, verifies, and runs by name, with no gates. The index:
+file's SHA-256 and size; its kind, profile, role, and support; and its
+companions by role, each draft with a measured verdict. Each kind has one
+`default` (comptime-checked), its configuration key's value and what
+`model pull --catalogue` fetches; the rest are `extra`. A `verified` entry
+is gated and written by `config init`; a `preview` one is gated (a skip
+fails `--strict`), prints its reason when run, and is never written or a
+default; an `archived` one pulls, verifies, and runs by name, no gate needed. The index:
 
 <!-- gen:catalogue -->
-| Name | Kind | Encoding | Main file | Status |
-| --- | --- | --- | --- | --- |
-| `qwen3.8-27b` | generation | UD-Q4_K_M | 16.56 GB | current |
-| `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
-| `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
-| `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
-| `inkling-2-mini` | generation | UD-Q4_K_XL | 17.63 GB | experimental |
-| `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
-| `laya` | decision | F16 | 842.6 MB | current |
-| `laya-multilingual` | decision | F16 | 643.8 MB | legacy |
-| `clef-flash` | decision | Q4_K_M | 6.73 GB | current |
-| `embeddinggemma-2` | embedding | Q8_0 | 309.9 MB | current |
-| `qwen3-tts-1.7b-customvoice` | speech | BF16 | 3.83 GB | current |
-| `qwen3-tts-0.6b-customvoice` | speech | BF16 | 1.81 GB | legacy |
-| `qwen3-tts-1.7b-base` | speech | BF16 | 3.86 GB | legacy |
-| `qwen3-tts-0.6b-base` | speech | BF16 | 1.83 GB | legacy |
-| `qwen3-tts-1.7b-voicedesign` | speech | BF16 | 3.83 GB | legacy |
-| `drama-3` | speech | Q4_K | 20.79 GB | legacy |
-| `voicetut-tts` | speech | Q8_0 | 1.35 GB | current |
-| `nemotron-asr-0.6b` | transcription | F32 | 2.55 GB | current |
+| Name | Kind | Role | Support | Encoding | Main file |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | default | verified | UD-Q4_K_M | 16.56 GB |
+| `gemma-4-12b-qat` | generation | extra | archived | Q4_0 (QAT) | 6.72 GB |
+| `gemma-4-26b-a4b` | generation | extra | archived | Q4_0 (QAT) | 14.25 GB |
+| `gemma-4-e4b-qat` | generation | extra | verified | Q4_0 (QAT) | 4.22 GB |
+| `inkling-2-mini` | generation | extra | verified | UD-Q4_K_XL | 17.63 GB |
+| `muse-glimmer-30b` | generation | extra | archived | UD-Q4_K_XL | 15.88 GB |
+| `laya` | decision | default | verified | F16 | 842.6 MB |
+| `laya-multilingual` | decision | extra | archived | F16 | 643.8 MB |
+| `clef-flash` | decision | extra | verified | Q4_K_M | 6.73 GB |
+| `embeddinggemma-2` | embedding | default | verified | Q8_0 | 309.9 MB |
+| `qwen3-tts-1.7b-customvoice` | speech | default | verified | BF16 | 3.83 GB |
+| `qwen3-tts-0.6b-customvoice` | speech | extra | archived | BF16 | 1.81 GB |
+| `qwen3-tts-1.7b-base` | speech | extra | archived | BF16 | 3.86 GB |
+| `qwen3-tts-0.6b-base` | speech | extra | archived | BF16 | 1.83 GB |
+| `qwen3-tts-1.7b-voicedesign` | speech | extra | archived | BF16 | 3.83 GB |
+| `drama-3` | speech | extra | archived | Q4_K | 20.79 GB |
+| `voicetut-tts` | speech | extra | verified | Q8_0 | 1.35 GB |
+| `nemotron-asr-0.6b` | transcription | default | verified | F32 | 2.55 GB |
 <!-- /gen -->
 
 A command refuses another kind's model by name. What each entry is:
@@ -336,7 +337,7 @@ nuclis validate [--model <name|path>] [--json]
 nuclis model ls [-l] [--available [--all]] [--json]
 nuclis model pull <name> [--with mmproj,draft[=<v>] | --all [--variants]]
 [--force] [--json]
-nuclis model pull --catalogue [--force] [--json]
+nuclis model pull --catalogue [--extra] [--force] [--json]
 nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]
 [--register <name> [--profile <p>]] [--force] [--json]
 nuclis model inspect <name> [--metadata] [--tensors] [--tensor <name>]

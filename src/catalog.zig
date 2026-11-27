@@ -4,11 +4,11 @@
 //! under `<root>/models`; *known* is this table, consulted to pull, to
 //! verify, and to supply defaults (docs/models/catalogue.md). A file is
 //! *runnable* when its architecture has an adapter and *supported* only when
-//! it is a `File` here with a pinned commit and SHA-256. An `experimental`
-//! artifact is pinned, verified, and gated like a current one, but `config
-//! init` never writes it and a run prints its `reason`. A `legacy` artifact
-//! still pulls, verifies, and runs, but `config init` never writes it, the
-//! index view hides it without `--all`, and it has no gates.
+//! it is a `File` here with a pinned commit and SHA-256. Each entry has a
+//! `Role` (the one `default` of its kind, which the configuration names, or
+//! an `extra`) and a `Support` (`verified` and gated; `preview`, gated but
+//! resting on something still moving, which names why; `archived`, pulled
+//! and run by name with no gate required). Both are comptime-checked below.
 //!
 //! Entries are named after the model, not the quantization, so a re-pin
 //! edits a row instead of renaming it in every configuration file. Facts are
@@ -20,7 +20,8 @@ const model = @import("model.zig");
 const config = @import("config.zig");
 const Allocator = std.mem.Allocator;
 
-pub const Role = model.Role;
+/// A file's part in an artifact (main, mmproj, draft, codec).
+pub const FileRole = model.Role;
 
 /// Which prompt profile (chat template, sampling defaults) a checkpoint uses.
 /// It is the checkpoint's, not the user's: forced at open, and named by
@@ -32,24 +33,22 @@ pub const Profile = inference.profiles.Profile;
 /// `generation` keeps its name; `model ls` prints it as "chat".
 pub const ModelKind = enum { generation, decision, embedding, speech, transcription };
 
-/// Whether the project still looks after an artifact
+/// Which model nuclis picks for a job: exactly one `default` per kind,
+/// which the configuration's per-kind key names and `model pull
+/// --catalogue` fetches; every other entry is an `extra`
 /// (docs/models/catalogue.md § The catalogue).
-pub const Lifecycle = enum {
-    current,
-    /// Verified, but resting on something still moving; it names why and
-    /// what promotes it.
-    experimental,
-    legacy,
+pub const Role = enum { default, extra };
 
-    /// The index view shows it without `--all`.
-    pub fn listed(self: Lifecycle, all: bool) bool {
-        return all or self != .legacy;
-    }
-
-    /// `config init` and `config sync` may write it into the registry.
-    pub fn written(self: Lifecycle) bool {
-        return self == .current;
-    }
+/// How far nuclis vouches for an artifact.
+pub const Support = enum {
+    /// Every release runs its gates.
+    verified,
+    /// Gated, but resting on something still moving; it names why and what
+    /// promotes it, a run prints the reason, and it is never a default.
+    preview,
+    /// Pulls, verifies, and runs by name; no gate is required (a gate may
+    /// still name its files by path, as the Gemma 4 26B-A4B's do).
+    archived,
 };
 
 /// How a speech model picks its voice (`config.json`'s `tts_model_type`).
@@ -76,7 +75,7 @@ pub const Verdict = struct {
 /// artifact's repository directory and, without `remote`, its Hub name too;
 /// a file of another repository names `remote` and lands beside the rest.
 pub const File = struct {
-    role: Role,
+    role: FileRole,
     /// Names one of several files of a role (`mtp`, `dflash2`); null alone.
     variant: ?[]const u8 = null,
     path: []const u8,
@@ -129,10 +128,15 @@ pub const Artifact = struct {
     /// The checkpoint as a person names it ("Qwen3.8 27B").
     title: []const u8,
     kind: ModelKind,
-    status: Lifecycle = .current,
-    /// An experimental artifact's one-line reason, printed when it runs.
+    role: Role = .extra,
+    support: Support = .verified,
+    /// What the model is for, in one line of at most `summary_max` bytes.
+    summary: []const u8,
+    /// The Hub repository a fine-tune derives from, when its card says so.
+    base: ?[]const u8 = null,
+    /// A preview artifact's one-line reason, printed when it runs.
     reason: ?[]const u8 = null,
-    /// What promotes an experimental artifact to current.
+    /// What promotes a preview artifact to verified.
     promote_when: ?[]const u8 = null,
     repo: []const u8,
     /// The 40-character commit every digest below was read at.
@@ -145,12 +149,22 @@ pub const Artifact = struct {
     defaults: Defaults = .{},
     traits: Traits = .{},
 
+    /// `model ls --available` shows it without `--all`.
+    pub fn listed(self: *const Artifact, all: bool) bool {
+        return all or self.support != .archived;
+    }
+
+    /// `config init` and `config sync` may write it into the registry.
+    pub fn written(self: *const Artifact) bool {
+        return self.support == .verified;
+    }
+
     pub fn main(self: *const Artifact) *const File {
         return &self.files[0];
     }
 
     /// The first file of `role`; for `draft`, the default variant.
-    pub fn companion(self: *const Artifact, role: Role) ?*const File {
+    pub fn companion(self: *const Artifact, role: FileRole) ?*const File {
         if (role == .draft) return self.draft(null);
         for (self.files) |*f| if (f.role == role) return f;
         return null;
@@ -203,7 +217,7 @@ pub const Artifact = struct {
 };
 
 /// Roles a pull always takes with the main file.
-pub fn pulledWith(role: Role) bool {
+pub fn pulledWith(role: FileRole) bool {
     return switch (role) {
         .main, .codec => true,
         else => false,
@@ -225,6 +239,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3.8-27b",
         .title = "Qwen3.8 27B",
         .kind = .generation,
+        .role = .default,
+        .summary = "the flagship: the agent's coder, with its DFlash2 and MTP drafters",
         .repo = "unsloth/Qwen3.8-27B-GGUF",
         .revision = "ce331efc48d5722b4b8041f72793e530eae18d9b",
         .architecture = "qwen35",
@@ -247,12 +263,13 @@ pub const artifacts = [_]Artifact{
         },
     },
     // Google's quantization-aware-trained 12B: every matrix Q4_0, the
-    // encoding it was trained for. Legacy.
+    // encoding it was trained for.
     .{
         .name = "gemma-4-12b-qat",
         .title = "Gemma 4 12B QAT",
         .kind = .generation,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "Google's dense 12B, quantization-aware trained to Q4_0",
         .repo = "unsloth/gemma-4-12B-it-qat-GGUF",
         .revision = "980b060c40a8539ac159e0501a3e0f66a6365af3",
         .architecture = "gemma4",
@@ -274,7 +291,8 @@ pub const artifacts = [_]Artifact{
         .name = "gemma-4-26b-a4b",
         .title = "Gemma 4 26B-A4B",
         .kind = .generation,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "Google's mixture of experts, 4B of 26B active; its gates check the expert path",
         .repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF",
         .revision = "7b92b5b28818151e8669af2e45e88d6086f490dd",
         .architecture = "gemma4",
@@ -296,6 +314,7 @@ pub const artifacts = [_]Artifact{
         .name = "gemma-4-e4b-qat",
         .title = "Gemma 4 E4B QAT",
         .kind = .generation,
+        .summary = "the small, efficient brain: hears audio, runs on the Linux CPU build",
         .repo = "unsloth/gemma-4-E4B-it-qat-GGUF",
         .revision = "8c5a9e4fd5482e2be20fe0bf013b4c262a8f4265",
         .architecture = "gemma4",
@@ -312,15 +331,12 @@ pub const artifacts = [_]Artifact{
         },
     },
     // The looped mixture-of-experts model: 24 stored blocks run as 48
-    // applications (docs/models/inkling2.md). Experimental until its
-    // encoding settles.
+    // applications (docs/models/inkling2.md).
     .{
         .name = "inkling-2-mini",
         .title = "Inkling 2 Mini",
         .kind = .generation,
-        .status = .experimental,
-        .reason = "its speed, drafter, and agent baselines are not yet recorded",
-        .promote_when = "its speed and agent-eval baselines are recorded and the maintainer promotes it",
+        .summary = "Thinking Machines' looped mixture of experts: 24 stored blocks run as 48",
         .repo = "unsloth/Inkling-2-Mini-GGUF",
         .revision = "8078d149286eec7193795413b9e0643da6d11fa1",
         .architecture = "inkling2_loop",
@@ -331,13 +347,13 @@ pub const artifacts = [_]Artifact{
             .{ .role = .mmproj, .path = "mmproj-F16.gguf", .size = 639_348_160, .sha256 = "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f", .used_for = "image input" },
         },
     },
-    // Meta's dense agentic model with its DFlash drafter. Legacy: no gate
-    // checks it.
+    // Meta's dense agentic model with its DFlash drafter.
     .{
         .name = "muse-glimmer-30b",
         .title = "Muse Glimmer 30B",
         .kind = .generation,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "Meta's dense agentic 30B, with its DFlash drafter",
         .repo = "unsloth/Muse-Glimmer-30B-GGUF",
         .revision = "faa5b025c584459c13febfa5c59883516710ae39",
         .architecture = "muse-glimmer",
@@ -357,6 +373,8 @@ pub const artifacts = [_]Artifact{
         .name = "laya",
         .title = "Laya",
         .kind = .decision,
+        .role = .default,
+        .summary = "fast typed answers about text, one pass per question",
         .repo = "convaiinnovations/laya",
         .revision = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
         .architecture = "modernbert",
@@ -371,7 +389,8 @@ pub const artifacts = [_]Artifact{
         .name = "laya-multilingual",
         .title = "Laya multilingual",
         .kind = .decision,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "Laya's decision head on a multilingual mmBERT-base encoder",
         .repo = "convaiinnovations/laya",
         .revision = "55cf4c4ebb4ebe31b2550e8bdf3bd21b99753851",
         .architecture = "modernbert",
@@ -387,6 +406,7 @@ pub const artifacts = [_]Artifact{
         .name = "clef-flash",
         .title = "Cloudflare clef-flash",
         .kind = .decision,
+        .summary = "typed answers about long states and images, on a Qwen3.5 backbone",
         .repo = "ggml-org/Clef-Flash-GGUF",
         .revision = "c3d925454595d792d5333da8b35f3c09911f7568",
         .architecture = "clef",
@@ -402,6 +422,8 @@ pub const artifacts = [_]Artifact{
         .name = "embeddinggemma-2",
         .title = "EmbeddingGemma 2",
         .kind = .embedding,
+        .role = .default,
+        .summary = "text, images, and audio into one vector space",
         .repo = "unsloth/embeddinggemma-2-GGUF",
         .revision = "031f0d4b35536f69ab3509d4893c923264fcf253",
         .architecture = inference.embed.architecture,
@@ -418,6 +440,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-1.7b-customvoice",
         .title = "Qwen3-TTS 1.7B CustomVoice",
         .kind = .speech,
+        .role = .default,
+        .summary = "nine built-in voices that take direction (\"warmly, smiling\")",
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-CustomVoice",
         .revision = "0c0e3051f131929182e2c023b9537f8b1c68adfe",
         .architecture = "qwen3_tts",
@@ -429,7 +453,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-0.6b-customvoice",
         .title = "Qwen3-TTS 0.6B CustomVoice",
         .kind = .speech,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "the nine built-in voices at 0.6B, without direction",
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-CustomVoice",
         .revision = "85e237c12c027371202489a0ec509ded67b5e4b5",
         .architecture = "qwen3_tts",
@@ -442,7 +467,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-1.7b-base",
         .title = "Qwen3-TTS 1.7B Base",
         .kind = .speech,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "a voice cloned from a saved clip",
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-Base",
         .revision = "fd4b254389122332181a7c3db7f27e918eec64e3",
         .architecture = "qwen3_tts",
@@ -454,7 +480,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-0.6b-base",
         .title = "Qwen3-TTS 0.6B Base",
         .kind = .speech,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "a voice cloned from a saved clip, at 0.6B",
         .repo = "Qwen/Qwen3-TTS-12Hz-0.6B-Base",
         .revision = "5d83992436eae1d760afd27aff78a71d676296fc",
         .architecture = "qwen3_tts",
@@ -468,7 +495,8 @@ pub const artifacts = [_]Artifact{
         .name = "qwen3-tts-1.7b-voicedesign",
         .title = "Qwen3-TTS 1.7B VoiceDesign",
         .kind = .speech,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "a voice the instruction describes",
         .repo = "Qwen/Qwen3-TTS-12Hz-1.7B-VoiceDesign",
         .revision = "5ecdb67327fd37bb2e042aab12ff7391903235d3",
         .architecture = "qwen3_tts",
@@ -482,7 +510,8 @@ pub const artifacts = [_]Artifact{
         .name = "drama-3",
         .title = "Fish Audio Drama 3",
         .kind = .speech,
-        .status = .legacy,
+        .support = .archived,
+        .summary = "speech in 83 languages: dialogue, bracketed delivery cues, cloning",
         .repo = "sakasegawa/drama-3-GGUF",
         .revision = "9a01354d04ab6eb521bc9cdfc56ab6824c474af2",
         .architecture = "drama3",
@@ -497,7 +526,8 @@ pub const artifacts = [_]Artifact{
         .name = "voicetut-tts",
         .title = "VoiceTut-TTS (Egyptian Arabic)",
         .kind = .speech,
-        .status = .current,
+        .summary = "Egyptian Arabic speech with Arabic-English code-switching, voice design, cloning",
+        .base = "k2-fsa/OmniVoice",
         .repo = "mohammedaly22/VoiceTut-TTS-GGUF",
         .revision = "615457bb2e9043f468e012c159146b28fa8f5959",
         .architecture = "omnivoice",
@@ -511,6 +541,8 @@ pub const artifacts = [_]Artifact{
         .name = "nemotron-asr-0.6b",
         .title = "Nemotron 3.5 ASR Streaming 0.6B",
         .kind = .transcription,
+        .role = .default,
+        .summary = "streaming recognition with punctuation and word times",
         .repo = "nvidia/nemotron-3.5-asr-streaming-0.6b",
         .revision = "ea30d66debe3740a08b573244286791d423d6b3e",
         .architecture = "nemotron3_5_asr",
@@ -584,16 +616,17 @@ pub fn ofPath(path: []const u8) ?*const Artifact {
     return null;
 }
 
-/// The line a run of an experimental artifact prints, or null for any
-/// other.
+/// The line a run of a preview artifact prints, or null for any other.
 pub fn notice(buffer: []u8, a: *const Artifact) ?[]const u8 {
-    if (a.status != .experimental) return null;
-    return std.fmt.bufPrint(buffer, "{s} is experimental: {s}", .{ a.name, a.reason.? }) catch buffer;
+    if (a.support != .preview) return null;
+    return std.fmt.bufPrint(buffer, "{s} is a preview: {s}", .{ a.name, a.reason.? }) catch buffer;
 }
 
-/// The first artifact of `kind`, for messages that name one.
-pub fn firstOf(kind: ModelKind) *const Artifact {
-    for (&artifacts) |*a| if (a.kind == kind and a.status == .current) return a;
+/// The `default` artifact of `kind`: the configuration's per-kind model
+/// key defaults to its name, and messages that name one name it. Usable at
+/// comptime; the checks below guarantee exactly one.
+pub fn defaultFor(kind: ModelKind) *const Artifact {
+    for (&artifacts) |*a| if (a.kind == kind and a.role == .default) return a;
     unreachable;
 }
 
@@ -705,10 +738,10 @@ pub fn padName(buffer: []u8, text: []const u8) []const u8 {
     return buffer[0..total];
 }
 
-/// The first current chat model that hears audio, for a refusal that names
+/// The first verified chat model that hears audio, for a refusal that names
 /// where to go instead.
 pub fn hearing() ?*const Artifact {
-    for (&artifacts) |*a| if (a.kind == .generation and a.status == .current and a.traits.hears) return a;
+    for (&artifacts) |*a| if (a.kind == .generation and a.support == .verified and a.traits.hears) return a;
     return null;
 }
 
@@ -735,12 +768,15 @@ pub fn findDigest(sha256: []const u8, size: u64) ?FileMatch {
 /// runner and the bench scripts read `src/catalog.json`, which `make index`
 /// writes with this and a test holds equal to the table.
 pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
-    const JsonFile = struct { role: Role, variant: ?[]const u8, local: []const u8, size: u64, sha256: []const u8, verdict: ?Verdict };
+    const JsonFile = struct { role: FileRole, variant: ?[]const u8, local: []const u8, size: u64, sha256: []const u8, verdict: ?Verdict };
     const JsonArtifact = struct {
         name: []const u8,
         title: []const u8,
         kind: ModelKind,
-        status: Lifecycle,
+        role: Role,
+        support: Support,
+        summary: []const u8,
+        base: ?[]const u8,
         repo: []const u8,
         revision: []const u8,
         architecture: []const u8,
@@ -753,7 +789,7 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
     try w.objectField("$comment");
     try w.write("Generated from src/catalog.zig by `make index`; do not edit. docs/models/catalogue.md § The catalogue.");
     try w.objectField("schema_version");
-    try w.write(1);
+    try w.write(2);
     try w.objectField("artifacts");
     try w.beginArray();
     for (&artifacts) |*a| {
@@ -771,7 +807,10 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
             .name = a.name,
             .title = a.title,
             .kind = a.kind,
-            .status = a.status,
+            .role = a.role,
+            .support = a.support,
+            .summary = a.summary,
+            .base = a.base,
             .repo = a.repo,
             .revision = a.revision,
             .architecture = a.architecture,
@@ -785,10 +824,51 @@ pub fn writeJson(out: *std.Io.Writer) std.Io.Writer.Error!void {
     try out.writeByte('\n');
 }
 
+/// The longest `summary`, in bytes: one line of a listing or a table.
+pub const summary_max = 90;
+
+/// A role or support rule an entry (or, for the per-kind count, a kind)
+/// breaks.
+pub const Broken = struct { name: []const u8, rule: []const u8 };
+
+fn hasControl(text: []const u8) bool {
+    for (text) |c| if (c < 0x20 or c == 0x7f) return true;
+    return false;
+}
+
+/// `owner/name`: exactly one `/`, both sides non-empty, no whitespace or
+/// control character.
+fn isRepoId(text: []const u8) bool {
+    const slash = std.mem.indexOfScalar(u8, text, '/') orelse return false;
+    if (slash == 0 or slash + 1 == text.len or std.mem.indexOfScalarPos(u8, text, slash + 1, '/') != null) return false;
+    for (text) |c| if (c <= ' ' or c == 0x7f) return false;
+    return true;
+}
+
+/// The first role or support rule `table` breaks, or null; `comptime`
+/// below fails the build on it, and the tests run it on tables made to
+/// break each rule.
+pub fn ruleBroken(table: []const Artifact) ?Broken {
+    for (table) |a| {
+        if ((a.support == .preview) != (a.reason != null) or (a.support == .preview) != (a.promote_when != null))
+            return .{ .name = a.name, .rule = "a preview artifact, and only one, names its reason and promote_when" };
+        if (a.role == .default and a.support != .verified) return .{ .name = a.name, .rule = "a default is verified, never a preview or archived" };
+        if (a.summary.len == 0 or a.summary.len > summary_max or hasControl(a.summary))
+            return .{ .name = a.name, .rule = "a summary is one line of 1 to 90 bytes, no control characters" };
+        if (a.base) |b| if (!isRepoId(b)) return .{ .name = a.name, .rule = "a base is an owner/name id" };
+    }
+    for (std.enums.values(ModelKind)) |kind| {
+        var defaults: usize = 0;
+        for (table) |a| defaults += @intFromBool(a.kind == kind and a.role == .default);
+        if (defaults != 1) return .{ .name = @tagName(kind), .rule = "every kind has exactly one default" };
+    }
+    return null;
+}
+
 comptime {
+    @setEvalBranchQuota(200_000);
+    if (ruleBroken(&artifacts)) |broken| @compileError(broken.name ++ ": " ++ broken.rule);
     for (artifacts) |a| {
-        if ((a.status == .experimental) != (a.reason != null) or (a.status == .experimental) != (a.promote_when != null))
-            @compileError(a.name ++ ": an experimental artifact, and only one, names its reason and promote_when");
         if (a.files.len > 8) @compileError(a.name ++ ": writeJson holds at most 8 files");
         for (a.files) |f| if (a.repo.len + 1 + f.path.len > 256) @compileError(a.name ++ ": a local path over 256 bytes");
     }
@@ -826,15 +906,111 @@ pub fn status(alloc: Allocator, io: std.Io, path: []const u8, sha256: []const u8
     return if (std.mem.eql(u8, sidecar.sha256, sha256) and sidecar.size == size) .present else .mismatch;
 }
 
-test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
+test "the picks: one default per kind, the extras, and the archived entries" {
+    const picks = [_]struct { ModelKind, []const u8 }{
+        .{ .generation, "qwen3.8-27b" },
+        .{ .decision, "laya" },
+        .{ .embedding, "embeddinggemma-2" },
+        .{ .speech, "qwen3-tts-1.7b-customvoice" },
+        .{ .transcription, "nemotron-asr-0.6b" },
+    };
+    for (picks) |pick| try std.testing.expectEqualStrings(pick[1], defaultFor(pick[0]).name);
+    for ([_][]const u8{ "gemma-4-e4b-qat", "inkling-2-mini", "clef-flash", "voicetut-tts" }) |name| {
+        const a = find(name).?;
+        try std.testing.expect(a.role == .extra and a.support == .verified);
+    }
+    const archived = [_][]const u8{ "gemma-4-12b-qat", "muse-glimmer-30b", "gemma-4-26b-a4b", "laya-multilingual", "qwen3-tts-0.6b-customvoice", "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-voicedesign", "drama-3" };
+    for (archived) |name| try std.testing.expect(find(name).?.role == .extra and find(name).?.support == .archived);
+    var verified: usize = 0;
+    for (&artifacts) |*a| verified += @intFromBool(a.support == .verified);
+    try std.testing.expectEqual(artifacts.len - archived.len, verified);
+    try std.testing.expectEqualStrings("k2-fsa/OmniVoice", find("voicetut-tts").?.base.?);
+    for (&artifacts) |*a| try std.testing.expect(a.summary.len > 0 and a.summary.len <= summary_max);
+}
+
+test "the rules: each one a table can break" {
+    const ok: Artifact = .{ .name = "a", .title = "A", .kind = .generation, .role = .default, .summary = "a model", .repo = "o/r", .revision = "", .files = &.{}, .architecture = "x", .quantization = "Q8_0" };
+    var table: [5]Artifact = undefined;
+    for (&table, std.enums.values(ModelKind)) |*a, kind| {
+        a.* = ok;
+        a.kind = kind;
+    }
+    try std.testing.expect(ruleBroken(&table) == null);
+    const Case = struct { edit: *const fn (*[5]Artifact) void, rule: []const u8 };
+    const cases = [_]Case{
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[0].role = .extra;
+            }
+        }.f, .rule = "every kind has exactly one default" },
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[1].kind = .generation;
+            }
+        }.f, .rule = "every kind has exactly one default" },
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[0].support = .preview;
+                t[0].reason = "moving";
+                t[0].promote_when = "it stops";
+            }
+        }.f, .rule = "a default is verified, never a preview or archived" },
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[0].support = .archived;
+            }
+        }.f, .rule = "a default is verified, never a preview or archived" },
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[0].role = .extra;
+                t[0].support = .preview;
+            }
+        }.f, .rule = "a preview artifact, and only one, names its reason and promote_when" },
+        .{ .edit = struct {
+            fn f(t: *[5]Artifact) void {
+                t[0].reason = "a reason on a verified entry";
+            }
+        }.f, .rule = "a preview artifact, and only one, names its reason and promote_when" },
+    };
+    for (cases) |case| {
+        var broken = table;
+        case.edit(&broken);
+        try std.testing.expectEqualStrings(case.rule, ruleBroken(&broken).?.rule);
+    }
+    const summary_rule = "a summary is one line of 1 to 90 bytes, no control characters";
+    for ([_][]const u8{ "", &@as([summary_max + 1]u8, @splat('x')), "two\nlines", "a\ttab", "a\x1b[2Jclear", "del\x7f" }) |summary| {
+        var broken = table;
+        broken[0].summary = summary;
+        try std.testing.expectEqualStrings(summary_rule, ruleBroken(&broken).?.rule);
+    }
+    var longest = table;
+    longest[0].summary = &@as([summary_max]u8, @splat('x'));
+    try std.testing.expect(ruleBroken(&longest) == null);
+    for ([_][]const u8{ "OmniVoice", "a/b/c", "/b", "a/", "/", "a b/c", "a/b\n", "a/\tb" }) |base| {
+        var broken = table;
+        broken[0].base = base;
+        try std.testing.expectEqualStrings("a base is an owner/name id", ruleBroken(&broken).?.rule);
+    }
+    var based = table;
+    based[0].base = "k2-fsa/OmniVoice";
+    try std.testing.expect(ruleBroken(&based) == null);
+}
+
+test "listed and written over every role and support" {
+    for (std.enums.values(Role)) |role| for (std.enums.values(Support)) |support| {
+        const a: Artifact = .{ .name = "a", .title = "A", .kind = .generation, .role = role, .support = support, .summary = "a model", .repo = "o/r", .revision = "", .files = &.{}, .architecture = "x", .quantization = "Q8_0" };
+        // Shown unless archived, and always under --all; written only when verified.
+        try std.testing.expectEqual(support != .archived, a.listed(false));
+        try std.testing.expect(a.listed(true));
+        try std.testing.expectEqual(support == .verified, a.written());
+    };
+}
+
+test "the index: kinds, the files, and the per-kind facts the old tables held" {
     const qwen = find("qwen3.8-27b").?;
     try std.testing.expectEqualStrings("unsloth/Qwen3.8-27B-GGUF", qwen.repo);
     try std.testing.expectEqual(Profile.qwen38, qwen.defaults.profile.?);
     try std.testing.expectEqual(Profile.gemma4_e, find("gemma-4-e4b-qat").?.defaults.profile.?);
-    for ([_][]const u8{ "gemma-4-12b-qat", "muse-glimmer-30b", "gemma-4-26b-a4b", "laya-multilingual", "qwen3-tts-0.6b-customvoice", "qwen3-tts-0.6b-base", "qwen3-tts-1.7b-base", "qwen3-tts-1.7b-voicedesign", "drama-3" }) |name| try std.testing.expectEqual(Lifecycle.legacy, find(name).?.status);
-    var current: usize = 0;
-    for (&artifacts) |*a| current += @intFromBool(a.status == .current);
-    try std.testing.expectEqual(@as(usize, 8), current);
     // A run finds its artifact from the path, at component boundaries.
     const qwen_path = try std.mem.concat(std.testing.allocator, u8, &.{ "/home/u/.nuclis/models/", qwen.repo, "/", qwen.main().path });
     defer std.testing.allocator.free(qwen_path);
@@ -844,11 +1020,8 @@ test "the index: kinds, lifecycle, and the per-kind facts the old tables held" {
     try std.testing.expect(ofPath(glued) == null and ofPath(qwen.main().path) == null);
     var line: [256]u8 = undefined;
     try std.testing.expect(notice(&line, qwen) == null);
-    const trial: Artifact = .{ .name = "trial", .title = "Trial", .kind = .generation, .status = .experimental, .reason = "its format is not merged upstream", .promote_when = "the format merges", .repo = "o/r", .revision = "", .files = &.{}, .architecture = "x", .quantization = "Q8_0" };
-    try std.testing.expectEqualStrings("trial is experimental: its format is not merged upstream", notice(&line, &trial).?);
-    // Experimental is listed and gated, never written by `config init`.
-    try std.testing.expect(Lifecycle.experimental.listed(false) and !Lifecycle.experimental.written());
-    try std.testing.expect(Lifecycle.current.written() and !Lifecycle.legacy.listed(false) and Lifecycle.legacy.listed(true));
+    const trial: Artifact = .{ .name = "trial", .title = "Trial", .kind = .generation, .support = .preview, .summary = "a trial", .reason = "its format is not merged upstream", .promote_when = "the format merges", .repo = "o/r", .revision = "", .files = &.{}, .architecture = "x", .quantization = "Q8_0" };
+    try std.testing.expectEqualStrings("trial is a preview: its format is not merged upstream", notice(&line, &trial).?);
     // Files outside the index run through discovery, not by name.
     try std.testing.expect(find("gemma-4-12b") == null and find("qwen") == null and find("qwen/Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
     // The measured verdicts: every drafter pays.
@@ -905,7 +1078,7 @@ test "drafts: variants, the default, and a file placed beside its parent" {
     // Files are found by origin and Hub name, and by digest.
     try std.testing.expectEqual(flash, findFile("z-lab/Qwen3.8-27B-DFlash2-GGUF", "Qwen3.8-27B-DFlash2-Q8_0.gguf").?.file);
     try std.testing.expect(findFile("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-DFlash2-Q8_0.gguf") == null);
-    try std.testing.expectEqual(Role.main, findFile("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q4_K_M.gguf").?.file.role);
+    try std.testing.expectEqual(FileRole.main, findFile("unsloth/Qwen3.8-27B-GGUF", "Qwen3.8-27B-UD-Q4_K_M.gguf").?.file.role);
     try std.testing.expectEqualStrings("image input", findFile("unsloth/Qwen3.8-27B-GGUF", "mmproj-BF16.gguf").?.file.used_for);
     try std.testing.expect(findFile("other/repo", "Qwen3.8-27B-UD-Q4_K_M.gguf") == null);
     try std.testing.expectEqual(flash, findDigest(flash.sha256, flash.size).?.file);

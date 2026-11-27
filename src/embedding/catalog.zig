@@ -37,7 +37,7 @@ pub fn resolve(arena: std.mem.Allocator, root: ?[]const u8, registry: config.Mod
     }
     if (catalog.find(name)) |entry| {
         if (entry.kind != .embedding) {
-            diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(entry.kind), catalog.firstOf(.embedding).name });
+            diag.set("{s} is a {s} model of the catalogue, not an embedding model ({s} is one)", .{ name, kindName(entry.kind), catalog.defaultFor(.embedding).name });
             return error.NotAnEmbeddingModel;
         }
         const dir = try catalog.underModels(arena, root, "", diag);

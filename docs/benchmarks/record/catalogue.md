@@ -322,3 +322,52 @@ remotely). `speech.model` defaults to `qwen3-tts-1.7b-customvoice` (built-in
 speakers that take a delivery instruction), `transcribe.model` to `nemotron-asr-0.6b`;
 the other commands refuse these names, and `speak` and `transcribe`
 refuse each other's.
+
+### Default and extra, verified, preview, and archived (2026-11-27)
+
+**The decision.** The catalogue's one field, `status` (`current`,
+`experimental`, `legacy`), answered two questions: which model nuclis picks
+for a job, and how far nuclis vouches for a file. So `legacy` mixed old
+picks with ungated files, and `current` mixed the flagship with its
+alternatives: of the nine legacy entries only `gemma-4-26b-a4b` had
+gates, while `gemma-4-e4b-qat`, a current entry that is no default, had
+20. The
+maintainer agreed on 2026-11-27 to split the field in two, `role`
+(`default` or `extra`, exactly one default per kind) and `support`
+(`verified`, `preview`, or `archived`), and to pick one default per kind.
+The configuration's per-kind model keys now read their default from the
+table, `model pull --catalogue` fetches the defaults and `--extra` the
+extras that are not archived, and the JSON listing went from schema 7 to
+8 (the index file `src/catalog.json` to schema 2), where an installed
+row's `default` became `configured` so that `default` names only the
+role. The gate runner now holds every verified or preview entry of every
+kind to a gate, not only chat ones (each had one already), and it and
+the workload runner refuse an index of another schema or with a role or
+support they do not know. An archived entry needs no gate.
+
+**The mapping.** The earlier lifecycle decisions: `gemma-4-12b-qat` and
+`muse-glimmer-30b` became legacy on 2026-11-10; `gemma-4-26b-a4b`,
+`laya-multilingual`, `drama-3`, and every Qwen3-TTS but the 1.7B
+CustomVoice on 2026-11-20; `inkling-2-mini` entered as experimental the
+same day as this decision.
+
+| Entry | Kind | Before | Role | Support | Why |
+| --- | --- | --- | --- | --- | --- |
+| `qwen3.8-27b` | generation | current | default | verified | the flagship and `engine.model`'s default |
+| `gemma-4-e4b-qat` | generation | current | extra | verified | the small chat model; its 20 gates stay |
+| `inkling-2-mini` | generation | experimental | extra | verified | promoted on the maintainer's word: the re-pin to the Hub's `main` at `8078d149` ended the encoding question (its `inkling2_loop` file reproduces the earlier file's CPU trace bit for bit) |
+| `gemma-4-12b-qat` | generation | legacy | extra | archived | no gate since 2026-11-10 |
+| `gemma-4-26b-a4b` | generation | legacy | extra | archived | its gates name its files by path, as the check of the expert path |
+| `muse-glimmer-30b` | generation | legacy | extra | archived | no gate since 2026-11-10 |
+| `laya` | decision | current | default | verified | `decide.model`'s default |
+| `clef-flash` | decision | current | extra | verified | gated, picked by name for long states and images |
+| `laya-multilingual` | decision | legacy | extra | archived | no gate since 2026-11-20 |
+| `embeddinggemma-2` | embedding | current | default | verified | the only embedding entry |
+| `qwen3-tts-1.7b-customvoice` | speech | current | default | verified | `speech.model`'s default |
+| `voicetut-tts` | speech | current | extra | verified | gated; Egyptian Arabic, picked by name |
+| `qwen3-tts-0.6b-customvoice`, `qwen3-tts-1.7b-base`, `qwen3-tts-0.6b-base`, `qwen3-tts-1.7b-voicedesign`, `drama-3` | speech | legacy | extra | archived | no gate since 2026-11-20 |
+| `nemotron-asr-0.6b` | transcription | current | default | verified | the only transcription entry |
+
+Every entry also gained a one-line `summary`; `voicetut-tts` is the one
+`base` set (`k2-fsa/OmniVoice`), the only fine-tune relation the family
+cards state.

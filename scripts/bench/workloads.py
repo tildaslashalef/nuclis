@@ -46,10 +46,36 @@ BAR_METRICS = ("decode_tokens_per_second", "prefill_tokens_per_second", "decode_
 # ---- pure functions (covered by --self-test) --------------------------------
 
 
-def validate_rows(wdoc, gdoc, index):
-    """The shapes × models document's own problems: unknown shapes and models,
-    and a model whose artifact is legacy (a workload measures current models)."""
+INDEX_SCHEMA = 2
+ROLES = ("default", "extra")
+SUPPORTS = ("verified", "preview", "archived")
+
+
+def index_problems(index):
+    """The index's own problems, as tools/gates/index.zig `validate` names them:
+    a schema other than INDEX_SCHEMA, or an artifact whose role or support is
+    missing or unknown. Unknown is refused, never read as verified."""
     problems = []
+    version = index.get("schema_version")
+    if type(version) is not int or version != INDEX_SCHEMA:
+        problems.append(f"src/catalog.json: schema_version must be {INDEX_SCHEMA}; run make index")
+    artifacts = index.get("artifacts")
+    if not isinstance(artifacts, list):
+        return problems + ['src/catalog.json: no "artifacts" list']
+    for i, a in enumerate(artifacts):
+        name = a.get("name") or f"artifacts[{i}]"
+        if a.get("role") not in ROLES:
+            problems.append(f"src/catalog.json: {name} has no known role (default or extra)")
+        if a.get("support") not in SUPPORTS:
+            problems.append(f"src/catalog.json: {name} has no known support (verified, preview, or archived)")
+    return problems
+
+
+def validate_rows(wdoc, gdoc, index):
+    """The shapes × models document's own problems: an index it cannot read,
+    unknown shapes and models, and a model whose artifact is archived (a
+    workload measures what is gated)."""
+    problems = index_problems(index)
     shapes = wdoc.get("shapes", {})
     for name, shape in shapes.items():
         if "base" in shape and shape["base"] not in shapes:
@@ -60,8 +86,8 @@ def validate_rows(wdoc, gdoc, index):
             problems.append(f'models.{row}: model names an unknown gates.json key "{key}"')
             continue
         artifact = manifest.index_artifact(index, gdoc["models"][key].get("artifact", ""))
-        if artifact is not None and artifact.get("status") == "legacy":
-            problems.append(f"models.{row}: {artifact['name']} is legacy; remove its workloads")
+        if artifact is not None and artifact.get("support") == "archived":
+            problems.append(f"models.{row}: {artifact['name']} is archived; remove its workloads")
         for name in m.get("shapes", []):
             if name not in shapes:
                 problems.append(f"models.{row}: unknown shape {name!r}")
@@ -439,10 +465,12 @@ def sample():
 
 
 SAMPLE_INDEX = {
+    "schema_version": 2,
     "artifacts": [
         {
             "name": "a",
-            "status": "current",
+            "role": "default",
+            "support": "verified",
             "defaults": {"draft": "mtp"},
             "files": [
                 {"role": "main", "local": "o/a/a.gguf"},
@@ -450,8 +478,14 @@ SAMPLE_INDEX = {
                 {"role": "draft", "variant": "dflash2", "local": "o/a/d.gguf", "verdict": {"draft_length": 5}},
             ],
         },
-        {"name": "old", "status": "legacy", "defaults": {}, "files": [{"role": "main", "local": "o/old.gguf"}]},
-    ]
+        {
+            "name": "old",
+            "role": "extra",
+            "support": "archived",
+            "defaults": {},
+            "files": [{"role": "main", "local": "o/old.gguf"}],
+        },
+    ],
 }
 
 
@@ -512,8 +546,33 @@ class SelfTest(unittest.TestCase):
         rows["models"]["old"] = {"model": "old", "shapes": ["nope"]}
         rows["models"]["gone"] = {"model": "zz", "shapes": []}
         problems = validate_rows(rows, gdoc, SAMPLE_INDEX)
-        for needle in ("old is legacy", "unknown shape 'nope'", 'unknown gates.json key "zz"'):
+        for needle in ("old is archived", "unknown shape 'nope'", 'unknown gates.json key "zz"'):
             self.assertTrue(any(needle in p for p in problems), (needle, problems))
+
+    def test_index_fails_closed(self):
+        self.assertEqual(index_problems(SAMPLE_INDEX), [])
+        one = {"name": "x", "role": "extra", "support": "verified"}
+        cases = [
+            ({"artifacts": []}, "schema_version must be 2"),
+            ({"schema_version": 1, "artifacts": []}, "schema_version must be 2"),
+            ({"schema_version": "2", "artifacts": []}, "schema_version must be 2"),
+            ({"schema_version": True, "artifacts": []}, "schema_version must be 2"),
+            ({"schema_version": 2}, 'no "artifacts" list'),
+            ({"schema_version": 2, "artifacts": [{**one, "role": None}]}, "x has no known role"),
+            ({"schema_version": 2, "artifacts": [{**one, "role": "current"}]}, "x has no known role"),
+            (
+                {"schema_version": 2, "artifacts": [{k: v for k, v in one.items() if k != "support"}]},
+                "x has no known support",
+            ),
+            ({"schema_version": 2, "artifacts": [{**one, "support": "legacy"}]}, "x has no known support"),
+        ]
+        for index, needle in cases:
+            problems = index_problems(index)
+            self.assertEqual(len(problems), 1, (index, problems))
+            self.assertIn(needle, problems[0])
+        gdoc = manifest.resolve({"models": {"a": {"artifact": "a"}}}, SAMPLE_INDEX)
+        stale = {**SAMPLE_INDEX, "schema_version": 1}
+        self.assertTrue(any("schema_version" in p for p in validate_rows(sample_rows(), gdoc, stale)))
 
     def test_validation_names_problems(self):
         doc = sample()
