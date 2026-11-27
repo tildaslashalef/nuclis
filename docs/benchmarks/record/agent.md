@@ -399,6 +399,32 @@ defaults, so `high` again exceeds `medium` and the answer keeps the same
 10,240 or more, which a user may set; neither was measured here, since
 no task reached the 4,096 cap except the runaway.
 
+### Inkling 2 Mini by effort (2026-11-27)
+
+`make agent-eval`'s eighteen tasks, seeds 1 and 2, `--model inkling-2-mini`
+with `--think low`, `medium`, and `high` (thinking budget 2,048), no
+drafter, the profile's sampling (temperature 1, no top-k), Metal, kv f16,
+M4 Pro 48 GB; a ReleaseSafe binary of `0c6a67b`; the pinned `main` file.
+The table is `agent-eval.py --compare` and `--breakdown`:
+
+| effort | runs passed | tasks | steps | wall s | prefill s (new / reused tok) | decode s (tok, tok/s) | model s a run | reasoning p50 / p90 / max | tool errors |
+| --- | ---: | ---: | ---: | ---: | --- | --- | ---: | --- | ---: |
+| low | 33 / 36 | 16 / 18 | 162 | 1,807 | 788 (199,535 / 823,684) | 1,007 (18,372, 18.2) | 47.8 | 8 / 64 / 210 | 0 |
+| medium | 34 / 36 | 17 / 18 | 177 | 1,994 | 739 (202,980 / 943,429) | 1,244 (24,927, 20.0) | 49.8 | 22 / 121 / 1,171 | 0 |
+| high | 34 / 36 | 16 / 18 | 202 | 2,578 | 764 (197,529 / 986,845) | 1,802 (34,856, 19.3) | 66.3 | 27 / 186 / 1,295 | 4 |
+
+- `manysteps` fails at every effort the same way: the edit is right and the
+  tests pass in 7 or 8 calls, where the task asks for ten or more. Low
+  also misses one `count`, high one `big`.
+- Medium keeps the entry's default: the most tasks, no tool error, 4 %
+  more model time than low; high costs a third more for no pass.
+- Per run, medium's 55 s of wall time is under half of Qwen3.8 with
+  DFlash2 above (2,113 s over 18 runs).
+- Decode in the loop reads 18 to 20 tokens/s against 28 to 31 greedy in
+  `bench`: the profile's sampling reads all 200,058 logits back and
+  sorts them on the host each token.
+- Prefill fit at medium: 0.22 s + 3.45 ms a new token.
+
 ### The context budget (2026-11-17)
 
 **Method.** Qwen3.8-27B UD-Q4_K_M, Metal, kv f16, M4 Pro 48 GB; effort

@@ -187,3 +187,40 @@ these with room for its own pass and the replay at any draft length, so
 it is not implemented. A later attempt starts from these costs, the
 routing above, and a recovery that copies the history instead of
 replaying it.
+
+## The baseline (2026-11-27)
+
+The same machine on AC power; nuclis at `0c6a67b` plus the `inkling2`
+workloads row, `ReleaseSafe`, Metal, F16 cache, no drafter, greedy; the
+pinned `main` file. `make workload NAME='inkling2/*'`: the acceptance
+arrays made by `nuclis tokenize` into
+`tests/fixtures/run-2026-11-27-inkling2/`, 128 tokens generated, context
+32,768 (65,536 for the last column); three runs to 16,384, one past
+([nuclis-2026-11-27-inkling2.json](../nuclis-2026-11-27-inkling2.json),
+[-64k](../nuclis-2026-11-27-inkling2-64k.json)):
+
+| Prompt tokens | 512 | 4,096 | 16,384 | 32,639 | 65,407 |
+| --- | ---: | ---: | ---: | ---: | ---: |
+| Decode tok/s | 25.63 | 26.40 | 21.37 | 21.10 | 18.51 |
+| Prefill tok/s | 282.43 | 325.98 | 274.39 | 281.95 | 232.03 |
+
+The 64K run's 32,639 read 22.55 and 287.13. The shapes, mean of 3 (2 for
+4,096): `prose512` decode 27.87, prefill 277.77; `prose4096` 27.35 and
+339.87; `code` (a 9-token raw prompt) 31.06 decode, first token 143 ms.
+The session is 2,630 MiB at a 32,768 context and 3,654 MiB at 65,536.
+
+**Memory** (`scripts/bench/nuclis_mem_usage.py --watch 2` over a 32,639
+prompt at context 32,768, peaks): the mapped weights resident 17.63 GB,
+the process footprint 3.80 GB (Metal 0.90 GB, CPU 2.82 GB), 21.43 GB in
+all.
+
+**Where prefill goes** (`bench --profile-prefill`, the 32,639 array, one
+run): 122.0 GPU seconds, 3,696 ms a 1,024-row chunk. The NVFP4 expert
+tiles take 38.8 % (gate-up 25.7 %, down 13.1 %) and the Q8_0 experts of
+stored 20–23 3.8 %; attention 24.5 % (scores with the relative bias 13.2 %,
+values 8.5 %, the sink statistics 2.1 %); the Q8_0 projections 12.5 %;
+`l2_clip_rows` 4.2 %, the bias table 4.1 %, the convolutions 3.3 %. At the
+same length the 26B-A4B spent 236.0 seconds, 66 % of them in global
+attention and 12 % in experts ([gemma4.md](gemma4.md#prefill-at-32k-todays-baseline-and-its-split-2026-11-18)):
+Inkling's windows keep attention cheap and its 48 expert applications a
+token cost the time instead.

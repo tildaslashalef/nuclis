@@ -104,6 +104,21 @@
       "evidence": {
         "acceptance": "docs/benchmarks/README.md"
       }
+    },
+    "inkling2": {
+      "model": "inkling2",
+      "run": "run-2026-11-27-inkling2",
+      "record_suffix": "inkling2",
+      "shapes": [
+        "prose512",
+        "prose4096",
+        "code",
+        "acceptance",
+        "acceptance64"
+      ],
+      "evidence": {
+        "acceptance": "docs/models/inkling2.md#numbers"
+      }
     }
   }
 }

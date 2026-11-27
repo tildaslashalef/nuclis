@@ -1,0 +1,53 @@
+{
+  "family": "inkling2",
+  "template": "<|message_system|><|content_text|>Thinking effort level: 0<|end_message|><|message_user|><|content_text|>NUCLIS_BENCH_CONTENT<|end_message|>",
+  "corpus_sha256": "77586bea137e1cb3a75155315ac0ca7eb9046f476ef087ce3a49ffb02b97d846",
+  "prefix_tokens": [
+    200002,
+    200004,
+    34182,
+    279,
+    154554,
+    150628,
+    25,
+    220,
+    15,
+    200010,
+    200000,
+    200004
+  ],
+  "suffix_tokens": [
+    198,
+    68790,
+    68014,
+    4836,
+    150039,
+    151592,
+    13,
+    200010
+  ],
+  "method": "prefix + truncated synthetic-code token sequence + suffix",
+  "made_by_nuclis": [
+    {
+      "lengths": [
+        512,
+        4096,
+        16384,
+        32639
+      ],
+      "corpus_functions": 2400,
+      "corpus_sha256": "10b2acb9a11723f1e7727061f5d385f2ad81f07256a3ca0cfded78f428dac527",
+      "revision": "0c6a67b8f6a3423c1d5ef5272eadb348d50c8f31",
+      "date": "2026-11-27"
+    },
+    {
+      "lengths": [
+        65407
+      ],
+      "corpus_functions": 2400,
+      "corpus_sha256": "10b2acb9a11723f1e7727061f5d385f2ad81f07256a3ca0cfded78f428dac527",
+      "revision": "0c6a67b8f6a3423c1d5ef5272eadb348d50c8f31",
+      "date": "2026-11-27"
+    }
+  ]
+}

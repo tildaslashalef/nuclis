@@ -106,14 +106,11 @@ index of application `il`.
 ### Session state
 
 - 48 KV caches, one per application: 8 full, 40 windowed at 1,024; F16 K and V take 4 KiB a token per application (1 GiB at 32,768 tokens).
-- Per application, a convolution history of 3 rows × 6,656 F32 channels:
-  K 0–1,023, V 1,024–2,047, attention output 2,048–4,351, FFN output
-  4,352–6,655 (78 KiB; 3.7 MiB for the 48).
+- Per application, a convolution history of 3 rows × 6,656 F32 channels (K, V, attention output 2,048–4,351, FFN output 4,352–6,655; 3.7 MiB for the 48).
 - That history is recurrent, so the session is hybrid ([spec § 5.4](../spec.md#54-session-contract)):
   a rewind restores a checkpoint, verify recovers by rewind and replay,
   `truncate` and `rewindTo` refuse. Attention layer `il`, recurrent
-  `48 + il`, whose matrix region is one unread value (`Session.init`
-  refuses an empty one); the depth residual is rebuilt from each token.
+  `48 + il` (a one-value matrix region); the depth residual is rebuilt from each token.
 
 ### Readings confirmed
 
@@ -186,11 +183,13 @@ F32 trace 7.6e-5 / 8.7e-7 from the reference's; a chunk on the F32 tiles
 
 ## Numbers
 
-The CPU reference agrees with the format's definition to 5 % relative RMS
-at every application of an 8-token prompt; its own trace is pinned.
-WikiText-2, 8 windows of 512, Metal, F16 cache: perplexity 7.6582 ± 0.43,
-the CPU's first window 0.137 % below. 16 rows route to 42–44 of the 128
-experts at 1K, 8K, and 32K tokens ([record](../benchmarks/record/inkling2.md#the-pinned-main-file-2026-11-27)).
+The CPU reference meets the format's definition to 5 % relative RMS at
+every application; its trace is pinned. WikiText-2, 8 × 512, Metal, F16:
+perplexity 7.6582 ± 0.43, the CPU 0.137 % below; 16 rows route to 42–44
+experts ([record](../benchmarks/record/inkling2.md#the-pinned-main-file-2026-11-27)).
+Decode 25.6 to 18.5 tokens/s, prefill 232 to 326, from 512 to 65,407
+tokens; 21.4 GB at 32K ([baseline](../benchmarks/record/inkling2.md#the-baseline-2026-11-27));
+the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#inkling-2-mini-by-effort-2026-11-27)).
 
 <!-- gen:gates-for:inkling2 -->
 | Gate | Tier | Model | Evidence |

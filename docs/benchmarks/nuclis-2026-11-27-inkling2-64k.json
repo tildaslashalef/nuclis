@@ -1,0 +1,279 @@
+{
+  "schema_version": 1,
+  "date": "2026-11-27",
+  "label": "warm",
+  "purged_before_first_run": false,
+  "started_at": "2026-11-27T09:19:14+00:00",
+  "finished_at": "2026-11-27T09:33:08+00:00",
+  "methodology": "See README.md#acceptance-runs. Each run feeds the run's token array (tests/fixtures) through `bench --prompt-tokens`; every sample is greedy with a fixed output budget and starts from an empty session; warmups are excluded from the means; peak resident memory is /usr/bin/time -l over the whole bench process (weights are memory-mapped, so it counts resident model pages).",
+  "nuclis_version": "nuclis 0.14.0-dev+0c6a67b.dirty",
+  "git_revision": "0c6a67b8f6a3423c1d5ef5272eadb348d50c8f31",
+  "git_dirty": true,
+  "build_mode": "safe",
+  "zig_version": "0.17.1",
+  "hardware": {
+    "cpu": "Apple M4 Pro",
+    "memory_bytes": 51539607552,
+    "cpu_cores": 12,
+    "gpu": "Graphics/Displays:\n\n    Apple M4 Pro:\n\n      Chipset Model: Apple M4 Pro\n      Type: GPU\n      Bus: Built-In\n      Total Number of Cores: 16\n      Vendor: Apple (0x106b)\n      Metal Support: Metal 4\n      Displays:\n        Color LCD:\n          Display Type: Built-in Liquid Retina XDR Display\n          Resolution: 3024 x 1964 Retina\n          Main Display: Yes\n          Mirror: Off\n          Online: Yes\n          Automatically Adjust Brightness: Yes\n          Connection Type: Internal"
+  },
+  "os": "ProductName:\t\tmacOS\nProductVersion:\t\t27.2.1\nBuildVersion:\t\t26B131",
+  "power": "Now drawing from 'Battery Power'\n -InternalBattery-0 (id=23265379)\t88%; discharging; 0:55 remaining present: true",
+  "model_path": "/Users/alef/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+  "model_sha256": "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3",
+  "backend": "metal",
+  "kv_precision": "f16",
+  "context": 65536,
+  "output_tokens": 128,
+  "warmup_runs": 1,
+  "repetitions": 1,
+  "boundary_repetitions": 1,
+  "prompts": [
+    {
+      "prompt_tokens": 32639,
+      "corpus_tokens": 32619,
+      "text_file": ".zig-cache/prompts/reference/prompt-32639.txt",
+      "text_sha256": "897c55f32ad99b5e2662f768995a6cb33848de61a3ab00afd8d3caacbea0675e",
+      "text_bytes": 79014,
+      "text_tokens": 32638,
+      "text_ids_equal_reference": false,
+      "reference_fixture": "tests/fixtures/run-2026-11-27-inkling2/prompt-32639.json",
+      "reference_fixture_sha256": "5afcc4e175b1dfb74ef4e100973fd5e15ce95cc7d490e9af49a08957dffb963e"
+    },
+    {
+      "prompt_tokens": 65407,
+      "corpus_tokens": 65387,
+      "text_file": ".zig-cache/prompts/reference/prompt-65407.txt",
+      "text_sha256": "e827b6fdea292d9550ed2aeb0bdca336abc33ab3aab8e27d74d900bc537afa8c",
+      "text_bytes": 158194,
+      "text_tokens": 65407,
+      "text_ids_equal_reference": true,
+      "reference_fixture": "tests/fixtures/run-2026-11-27-inkling2/prompt-65407.json",
+      "reference_fixture_sha256": "5a3c556c1b74be1ed6e6d1471e51139092c63b35f92800a71d72b1c99c66b702"
+    }
+  ],
+  "summary": [
+    {
+      "prompt_tokens": 32639,
+      "samples": 1,
+      "prefill_tokens_per_second": {
+        "mean": 287.13480262223777,
+        "sample_stdev": null
+      },
+      "decode_tokens_per_second": {
+        "mean": 22.553697778049138,
+        "sample_stdev": null
+      },
+      "first_token_milliseconds": {
+        "mean": 113671.347792,
+        "sample_stdev": null
+      },
+      "session_bytes": 3831676928,
+      "peak_resident_bytes": 4819435520
+    },
+    {
+      "prompt_tokens": 65407,
+      "samples": 1,
+      "prefill_tokens_per_second": {
+        "mean": 232.02833502240793,
+        "sample_stdev": null
+      },
+      "decode_tokens_per_second": {
+        "mean": 18.51479333292083,
+        "sample_stdev": null
+      },
+      "first_token_milliseconds": {
+        "mean": 281892.296084,
+        "sample_stdev": null
+      },
+      "session_bytes": 3831676928,
+      "peak_resident_bytes": 4819795968
+    }
+  ],
+  "family": "inkling2",
+  "run": "run-2026-11-27-inkling2",
+  "previous": null,
+  "reference": null,
+  "runs": [
+    {
+      "prompt_tokens": 32639,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-11-27-inkling2/prompt-32639.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "65536",
+        "--kv",
+        "f16",
+        "--repeat",
+        "1",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 4819435520,
+      "peak_footprint_bytes": 4896020168,
+      "memory_before": {
+        "timestamp": "2026-11-27T09:19:14+00:00",
+        "swap": "total = 1024.00M  used = 1.56M  free = 1022.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-11-27T09:23:12+00:00",
+        "swap": "total = 1024.00M  used = 1.56M  free = 1022.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 65536,
+        "kv_precision": "f16",
+        "session_bytes": 3831676928,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 1,
+        "load_milliseconds": 329.326833,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 112275.1755,
+            "first_token_milliseconds": 112275.175541,
+            "decode_milliseconds": 5560.444125,
+            "prefill_tokens_per_second": 290.7054017475127,
+            "decode_tokens_per_second": 22.83990219935894,
+            "gpu_busy_milliseconds": 117267.11233315291,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 32639,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 113671.34775,
+            "first_token_milliseconds": 113671.347792,
+            "decode_milliseconds": 5631.005667,
+            "prefill_tokens_per_second": 287.13480262223777,
+            "decode_tokens_per_second": 22.553697778049138,
+            "gpu_busy_milliseconds": 118945.81649979227,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 287.13480262223777,
+        "mean_decode_tokens_per_second": 22.553697778049138,
+        "mean_first_token_milliseconds": 113671.347792
+      }
+    },
+    {
+      "prompt_tokens": 65407,
+      "command": [
+        "./zig-out/bin/nuclis",
+        "bench",
+        "--model",
+        "/Users/alef/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "--backend",
+        "metal",
+        "--prompt-tokens",
+        "/Users/alef/Code/nuclis/tests/fixtures/run-2026-11-27-inkling2/prompt-65407.json",
+        "--max-tokens",
+        "128",
+        "--ctx-size",
+        "65536",
+        "--kv",
+        "f16",
+        "--repeat",
+        "1",
+        "--warmup",
+        "1",
+        "--json"
+      ],
+      "peak_resident_bytes": 4819795968,
+      "peak_footprint_bytes": 4903081648,
+      "memory_before": {
+        "timestamp": "2026-11-27T09:23:12+00:00",
+        "swap": "total = 1024.00M  used = 1.56M  free = 1022.44M  (encrypted)"
+      },
+      "memory_after": {
+        "timestamp": "2026-11-27T09:33:02+00:00",
+        "swap": "total = 1024.00M  used = 1.56M  free = 1022.44M  (encrypted)"
+      },
+      "report": {
+        "schema_version": 1,
+        "backend": "metal",
+        "model_path": "/Users/alef/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
+        "config": "/Users/alef/.nuclis/nuclis.json",
+        "prompt_source": "tokens",
+        "build_mode": "safe",
+        "context": 65536,
+        "kv_precision": "f16",
+        "session_bytes": 3831676928,
+        "max_tokens": 128,
+        "sampling": "greedy",
+        "sampling_options": {
+          "temperature": 0,
+          "top_k": 0,
+          "top_p": 1,
+          "min_p": 0,
+          "presence_penalty": 0,
+          "repetition_penalty": 1
+        },
+        "seed": 0,
+        "warmup_runs": 1,
+        "measured_runs": 1,
+        "load_milliseconds": 348.158792,
+        "samples": [
+          {
+            "warmup": true,
+            "prompt_tokens": 65407,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 293806.144875,
+            "first_token_milliseconds": 293806.144917,
+            "decode_milliseconds": 6954.993833,
+            "prefill_tokens_per_second": 222.6195780480611,
+            "decode_tokens_per_second": 18.26026061984576,
+            "gpu_busy_milliseconds": 299933.4754580923,
+            "speculative": false
+          },
+          {
+            "warmup": false,
+            "prompt_tokens": 65407,
+            "generated_tokens": 128,
+            "stop_reason": "token_budget",
+            "prefill_milliseconds": 281892.295584,
+            "first_token_milliseconds": 281892.296084,
+            "decode_milliseconds": 6859.379833,
+            "prefill_tokens_per_second": 232.02833502240793,
+            "decode_tokens_per_second": 18.51479333292083,
+            "gpu_busy_milliseconds": 288143.64758331794,
+            "speculative": false
+          }
+        ],
+        "mean_prefill_tokens_per_second": 232.02833502240793,
+        "mean_decode_tokens_per_second": 18.51479333292083,
+        "mean_first_token_milliseconds": 281892.296084
+      }
+    }
+  ]
+}

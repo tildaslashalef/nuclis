@@ -60,6 +60,11 @@ workloads at this commit:
 | `gemma4-e4b/prose512` | gemma4_e4b | bench |
 | `gemma4-e4b/acceptance` | gemma4_e4b | acceptance |
 | `gemma4-e4b/acceptance64` | gemma4_e4b | acceptance |
+| `inkling2/prose512` | inkling2 | bench |
+| `inkling2/prose4096` | inkling2 | bench |
+| `inkling2/code` | inkling2 | bench |
+| `inkling2/acceptance` | inkling2 | acceptance |
+| `inkling2/acceptance64` | inkling2 | acceptance |
 <!-- /gen -->
 
 The current rates are the README's [Results](../../README.md#results); the
