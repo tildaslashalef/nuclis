@@ -68,7 +68,10 @@ def rex_key(name):
 def rex(*args, check=True):
     if shutil.which("rex") is None:
         raise SystemExit("rex: not on PATH (the Rex app's CLI; see docs/development.md)")
-    r = subprocess.run(["rex", *args], capture_output=True, text=True)
+    # Inside a Rex pane these scope `-b` lookups to the caller's own session,
+    # where the harness's block is not; it always names its block itself.
+    env = {k: v for k, v in os.environ.items() if k not in ("REX_BLOCK", "REX_SESSION")}
+    r = subprocess.run(["rex", *args], capture_output=True, text=True, env=env)
     if check and r.returncode != 0:
         raise SystemExit("rex %s: %s" % (args[0], (r.stderr or r.stdout).strip()))
     return r

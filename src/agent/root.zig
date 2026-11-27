@@ -148,6 +148,9 @@ const Ui = struct {
     status: []const u8 = "ready",
     stats: Stats = .{},
     turn_started: std.Io.Timestamp,
+    /// The completer's layer observer, whose time limit `startRun` restarts
+    /// so it bounds one turn rather than the whole process.
+    trace: ?*generate.Trace = null,
     first_token: ?std.Io.Timestamp = null,
     /// The step's prefill as the beats report it: when its first beat arrived
     /// and at what position, and the rate measured from there. The rate
@@ -1424,6 +1427,13 @@ const Ui = struct {
         return a.print("{s} {s}{s} {d:.1}s", .{ spin, self.preparing.?, gl.ellipsis, elapsed });
     }
 
+    /// Starts the clock of a run that reaches the model (a turn, the
+    /// priming, a hand-off): the elapsed display and the observer's limit.
+    fn startRun(self: *Ui) void {
+        self.turn_started = std.Io.Clock.awake.now(self.io);
+        if (self.trace) |trace| trace.started = self.turn_started;
+    }
+
     /// Enters the busy "preparing" state for work that happens before a
     /// turn; the GPU wait's tick animates it. `endPreparing` leaves it.
     fn beginPreparing(self: *Ui, label: []const u8) void {
@@ -1524,7 +1534,7 @@ fn primeSession(ui: *Ui) void {
     ui.busy = true;
     ui.warming = true;
     ui.status = "warming up";
-    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.startRun();
     ui.first_token = null;
     ui.prefill_started = null;
     ui.prefill_rate = null;
@@ -1677,7 +1687,7 @@ fn runTurn(ui: *Ui, sampler: *inference.sampling.Sampler, user: []const u8, want
     ui.first_token = null;
     ui.prefill_started = null;
     ui.prefill_rate = null;
-    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.startRun();
     ui.live_phase = .reading;
     ui.phase_started = ui.turn_started;
     ui.stats = .{};
@@ -1718,7 +1728,7 @@ fn compactCommand(ui: *Ui, focus: []const u8) !void {
     ui.first_token = null;
     ui.prefill_started = null;
     ui.prefill_rate = null;
-    ui.turn_started = std.Io.Clock.awake.now(ui.io);
+    ui.startRun();
     ui.live_phase = .reading;
     ui.phase_started = ui.turn_started;
     ui.stats = .{};
@@ -2389,6 +2399,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         .progress = .{ .context = &ui, .call = Ui.onProgress },
     };
     completer.observer = trace.observer();
+    ui.trace = &trace;
     // The project's instructions file and the date are read once: the
     // prompt is primed into every session this process opens.
     var instructions = try loop.system_prompt.load(alloc, io, .cwd(), settings.instructions);

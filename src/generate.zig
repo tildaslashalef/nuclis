@@ -41,9 +41,15 @@ pub const Options = struct {
 /// makes the GPU plan synchronize after every layer), and forwards turn
 /// progress to a caller that asked for it (`progress`).
 pub const Trace = struct {
+    /// The longest one run may take before `check` stops it.
+    pub const time_limit_seconds = 3600;
+
     io: std.Io,
     directory: ?[]const u8,
     position: usize = 0,
+    /// When the wall-clock bound began. A caller that runs several
+    /// generations through one `Trace` (the agent, a turn each) resets it
+    /// per run, or every run after `time_limit_seconds` fails at once.
     started: std.Io.Timestamp,
     /// Where turn progress goes. The agent's status bar installs one;
     /// `generate` and `bench` leave it null, so a measured run never pays
@@ -62,7 +68,7 @@ pub const Trace = struct {
         const self: *Trace = @ptrCast(@alignCast(context));
         try self.io.checkCancel();
         try interrupt.check();
-        if (self.started.durationTo(std.Io.Clock.awake.now(self.io)).toSeconds() > 3600) return error.TimeLimitExceeded;
+        if (self.started.durationTo(std.Io.Clock.awake.now(self.io)).toSeconds() > time_limit_seconds) return error.TimeLimitExceeded;
     }
     pub fn layer(context: *anyopaque, index: usize, values: []const f32) !void {
         const self: *Trace = @ptrCast(@alignCast(context));
@@ -484,6 +490,16 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, setting
         try writer.writeByte('\n');
         if (outcome.stop == .cancelled) std.log.info("generation cancelled after {d} tokens", .{count});
     }
+}
+
+test "the trace's time limit counts from its start, which a new run resets" {
+    const io = std.testing.io;
+    const now = std.Io.Clock.awake.now(io);
+    var trace: Trace = .{ .io = io, .directory = null, .started = now.subDuration(.fromSeconds(Trace.time_limit_seconds + 60)) };
+    try std.testing.expectError(error.TimeLimitExceeded, Trace.check(&trace));
+    // A process that outlives the limit, such as the agent, restarts the clock per turn.
+    trace.started = std.Io.Clock.awake.now(io);
+    try Trace.check(&trace);
 }
 
 test "the trace observer carries progress only when a caller asks for it" {
