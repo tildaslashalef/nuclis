@@ -311,6 +311,26 @@ pub const artifacts = [_]Artifact{
             .{ .role = .draft, .path = "MTP/mtp-gemma-4-E4B-it-Q4_0.gguf", .size = 59_678_016, .sha256 = "423074e537504b4f9ec5eafed5c639fac82c96631626efccacdd3c4039b20605", .used_for = "speculative decoding", .verdict = .{ .speculative = true, .draft_length = 6, .max_depth = 32768 } },
         },
     },
+    // The looped mixture-of-experts model: 24 stored blocks run as 48
+    // applications (docs/models/inkling2.md). Experimental until its
+    // encoding settles.
+    .{
+        .name = "inkling-2-mini",
+        .title = "Inkling 2 Mini",
+        .kind = .generation,
+        .status = .experimental,
+        .reason = "its speed, drafter, and agent baselines are not yet recorded",
+        .promote_when = "its speed and agent-eval baselines are recorded and the maintainer promotes it",
+        .repo = "unsloth/Inkling-2-Mini-GGUF",
+        .revision = "8078d149286eec7193795413b9e0643da6d11fa1",
+        .architecture = "inkling2_loop",
+        .quantization = "UD-Q4_K_XL",
+        .defaults = .{ .profile = .inkling2, .think = .medium, .thinking_budget = 2048 },
+        .files = &.{
+            .{ .role = .main, .path = "Inkling-2-Mini-UD-Q4_K_XL.gguf", .size = 17_629_760_736, .sha256 = "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3" },
+            .{ .role = .mmproj, .path = "mmproj-F16.gguf", .size = 639_348_160, .sha256 = "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f", .used_for = "image input" },
+        },
+    },
     // Meta's dense agentic model with its DFlash drafter. Legacy: no gate
     // checks it.
     .{

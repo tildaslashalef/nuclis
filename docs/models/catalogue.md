@@ -253,6 +253,7 @@ sidecars, never by hashing, so a listing is instant.
 | `gemma-4-12b-qat` | generation | Q4_0 (QAT) | 6.72 GB | legacy |
 | `gemma-4-26b-a4b` | generation | Q4_0 (QAT) | 14.25 GB | legacy |
 | `gemma-4-e4b-qat` | generation | Q4_0 (QAT) | 4.22 GB | current |
+| `inkling-2-mini` | generation | UD-Q4_K_XL | 17.63 GB | experimental |
 | `muse-glimmer-30b` | generation | UD-Q4_K_XL | 15.88 GB | legacy |
 | `laya` | decision | F16 | 842.6 MB | current |
 | `laya-multilingual` | decision | F16 | 643.8 MB | legacy |

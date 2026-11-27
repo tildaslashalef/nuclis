@@ -981,9 +981,9 @@ fn validate(p: *Page) !void {
 
     try heading(p, "Notes:");
     try plain(p, "Checks the file against its architecture's adapter (qwen35, gemma4,");
-    try plain(p, "muse-glimmer, inkling2) and binds the text-layer weights, so a missing");
-    try plain(p, "tensor or an unsupported encoding is named here instead of at the first");
-    try plain(p, "token. A file that binds but whose family has no executor is a");
+    try plain(p, "muse-glimmer, inkling2_loop) and binds the text-layer weights, so a");
+    try plain(p, "missing tensor or an unsupported encoding is named here instead of at the");
+    try plain(p, "first token. A file that binds but whose family has no executor is a");
     try plain(p, "warning: `generate` refuses it. It does not verify tokenizer");
     try plain(p, "behaviour, weight values, or numerical execution.");
     try p.end();

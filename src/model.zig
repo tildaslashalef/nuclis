@@ -2989,9 +2989,9 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     const empty = try list(arena, io, root, .{}, null);
     try std.testing.expectEqual(@as(usize, 0), empty.installed.len);
     try std.testing.expectEqual(catalog.artifacts.len, empty.index.len);
-    var current: usize = 0;
-    for (&catalog.artifacts) |*a| current += @intFromBool(a.status == .current);
-    try std.testing.expectEqual(current, empty.available);
+    var listed: usize = 0;
+    for (&catalog.artifacts) |*a| listed += @intFromBool(a.status.listed(false));
+    try std.testing.expectEqual(listed, empty.available);
     try std.testing.expectError(error.FileNotFound, tmp.dir.access(io, "models", .{}));
     const qwen = catalog.find("qwen3.8-27b").?;
     const q = "models/unsloth/Qwen3.8-27B-GGUF/";
@@ -3069,7 +3069,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expectEqual(@as(usize, 2), listing.outside_layout);
     // Every model file without a sidecar, the index's hand-placed drafter included.
     try std.testing.expectEqual(@as(usize, 4), listing.without_sidecar.len);
-    try std.testing.expectEqual(current - 1, listing.available);
+    try std.testing.expectEqual(listed - 1, listing.available);
     // What `/model` offers: the entries whose file is present, in the file's
     // order, then index names no entry shadows (none here: the one present
     // index model is registered under its own name too).
@@ -3104,7 +3104,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expect(std.mem.indexOf(u8, text, "\nRegistry entries without a file\n  NAME  PATH\n  gone  unsloth/Gone-GGUF/gone.gguf\n→ nuclis config sync --prune removes them\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 4 files without a sidecar\n→ nuclis model adopt <path> verifies one and writes it\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, text, "\n▲ 2 model files outside the <owner>/<repo>/ layout, not listed\n") != null);
-    try std.testing.expect(std.mem.endsWith(u8, text, "\n→ 7 more in the catalogue: nuclis model ls --available\n"));
+    try std.testing.expect(std.mem.endsWith(u8, text, "\n→ 8 more in the catalogue: nuclis model ls --available\n"));
     // No digest without -l; with it, 12 characters of each and the defaults.
     try std.testing.expect(std.mem.indexOf(u8, text, "1bce504dfecd") == null);
     out.clearRetainingCapacity();
@@ -3124,12 +3124,13 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try std.testing.expectEqualStrings(qwen.main().sha256, rows[1].object.get("files").?.array.items[0].object.get("sha256").?.string);
     try std.testing.expectEqualStrings("gone", parsed.value.object.get("missing").?.array.items[0].object.get("name").?.string);
 
-    // The index view: current artifacts by kind, installed ones marked, legacy behind --all.
+    // The index view: current and experimental artifacts by kind, installed
+    // ones marked, legacy behind --all.
     out.clearRetainingCapacity();
     try ls(alloc, io, root, .{}, null, .{ .available = true }, false, &out.writer, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 8 entries, pinned and verified by name\n\nNAME   "));
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 chat           UD-Q4_K_M   16.56 GB  ✓ installed\n") != null);
-    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        decision       F16         842.6 MB  – not pulled\n") != null);
+    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 9 entries, pinned and verified by name\n\nNAME   "));
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 chat           UD-Q4_K_M   16.56 GB  ✓ installed   current\n") != null);
+    try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        decision       F16         842.6 MB  – not pulled  current\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "gemma-4-12b-qat") == null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\n→ 9 legacy entries hidden: nuclis model ls --available --all\n") != null);
     out.clearRetainingCapacity();
@@ -3140,7 +3141,7 @@ test "ls lists what is installed, grouped by kind, with the index one flag away"
     try ls(alloc, io, root, .{}, null, .{ .available = true }, true, &out.writer, .plain);
     const index = try std.json.parseFromSlice(std.json.Value, alloc, out.written(), .{});
     defer index.deinit();
-    try std.testing.expectEqual(current, index.value.object.get("artifacts").?.array.items.len);
+    try std.testing.expectEqual(listed, index.value.object.get("artifacts").?.array.items.len);
 }
 
 /// Test double for `readRange`: serves a directory image in `chunk`-sized

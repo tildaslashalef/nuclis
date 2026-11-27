@@ -462,7 +462,7 @@ fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
     try b.set("general.quantization_version", .{ .uint32 = 2 });
     try b.set("general.name", .{ .string = "tiny inkling2" });
     for ([_]struct { []const u8, usize }{
-        .{ "block_count", k.block_count },
+        .{ "block_count", k.stored_blocks },
         .{ "context_length", k.context_length },
         .{ "embedding_length", k.embedding },
         .{ "feed_forward_length", k.expert_feed_forward },
@@ -478,15 +478,15 @@ fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
         .{ "attention.relative_extent", k.relative_extent },
         .{ "attention.log_scale_floor", k.log_scale_floor },
         .{ "rope.dimension_count", 0 },
-        .{ "num_loops", k.loops },
-        .{ "loop.core_start", k.core_start },
-        .{ "loop.core_end", k.core_end },
+        .{ "loop.count", k.loops },
+        .{ "loop.start", k.core_start },
+        .{ "loop.end", k.core_end },
         .{ "loop.gate_rank", k.gate_rank },
         .{ "attn_res.block_size", k.residual_span },
         .{ "shortconv.l_cache", k.conv_taps },
         .{ "vocab_size", k.padded_vocabulary },
         .{ "vocab_size_unpadded", k.vocabulary },
-    }) |entry| try b.setf("inkling2.{s}", .{entry[0]}, .{ .uint32 = @intCast(entry[1]) });
+    }) |entry| try b.setf("inkling2_loop.{s}", .{entry[0]}, .{ .uint32 = @intCast(entry[1]) });
     for ([_]struct { []const u8, f32 }{
         .{ "attention.layer_norm_rms_epsilon", k.rms_epsilon },
         .{ "expert_weights_scale", k.expert_weights_scale },
@@ -496,18 +496,19 @@ fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
         .{ "attention.qk_clip", k.qk_clip },
         .{ "attention.relative_clip", k.relative_clip },
         .{ "attention.log_scale_alpha", k.log_scale_alpha },
-    }) |entry| try b.setf("inkling2.{s}", .{entry[0]}, .{ .float32 = entry[1] });
-    var head_counts: [k.block_count]i32 = undefined;
-    var kv_counts: [k.block_count]i32 = undefined;
-    var sliding: [k.block_count]bool = undefined;
-    for (0..k.block_count) |a| {
-        head_counts[a] = k.heads;
-        kv_counts[a] = k.kv_heads;
-        sliding[a] = !k.isGlobal(a);
+    }) |entry| try b.setf("inkling2_loop.{s}", .{entry[0]}, .{ .float32 = entry[1] });
+    var head_counts: [k.stored_blocks]i32 = undefined;
+    var kv_counts: [k.stored_blocks]i32 = undefined;
+    var sliding: [k.stored_blocks]bool = undefined;
+    for (0..k.stored_blocks) |i| {
+        head_counts[i] = k.heads;
+        kv_counts[i] = k.kv_heads;
+        sliding[i] = k.kindOf(i) != .global;
     }
-    try b.set("inkling2.attention.head_count", .{ .int32s = try b.arena.dupe(i32, &head_counts) });
-    try b.set("inkling2.attention.head_count_kv", .{ .int32s = try b.arena.dupe(i32, &kv_counts) });
-    try b.set("inkling2.attention.sliding_window_pattern", .{ .booleans = try b.arena.dupe(bool, &sliding) });
+    try b.set("inkling2_loop.attention.head_count", .{ .int32s = try b.arena.dupe(i32, &head_counts) });
+    try b.set("inkling2_loop.attention.head_count_kv", .{ .int32s = try b.arena.dupe(i32, &kv_counts) });
+    try b.set("inkling2_loop.attention.sliding_window_pattern", .{ .booleans = try b.arena.dupe(bool, &sliding) });
+    try b.set("inkling2_loop.loop.varying", .{ .boolean = false });
     try byteLevelTokenizer(b, "inkling2", k.vocabulary);
 
     const d: u64 = k.embedding;
@@ -518,8 +519,6 @@ fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
     try b.matrix("output.weight", &.{ d, k.padded_vocabulary });
     try b.gain("output_norm.weight", &.{d});
     try b.noise("output_res_query.weight", &.{d}, 0.1);
-    try b.noise("loop_res_query.weight", &.{ d, k.loop_queries }, 0.1);
-    try b.noise("loop_kv_res_query.weight", &.{ d, k.loop_queries }, 0.1);
     for (0..k.stored_blocks) |i| {
         const global = k.kindOf(i) == .global;
         if (global) {
@@ -563,11 +562,14 @@ fn emitInkling2(b: *Builder, _: u64) Allocator.Error!void {
             try b.matrix(gate_up, &gate_up_shape);
             try b.matrix(down, &down_shape);
         }
-        if (i >= k.core_start and i < k.core_end) for ([_][]const u8{ "attn", "k", "v", "mlp" }) |part| {
-            try b.noise(try b.label("blk.{d}.loop_{s}_down.weight", .{ i, part }), &.{ 2 * d, k.gate_rank }, 1 / @sqrt(@as(f32, @floatFromInt(2 * d))));
-            try b.noise(try b.label("blk.{d}.loop_{s}_gain.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
-            try b.noise(try b.label("blk.{d}.loop_{s}_forget.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
-        };
+        if (i >= k.core_start and i < k.core_end) {
+            for ([_][]const u8{ "q", "k", "v", "ffn" }) |part| {
+                try b.noise(try b.label("blk.{d}.loop_{s}_ctrl_down.weight", .{ i, part }), &.{ 2 * d, k.gate_rank }, 1 / @sqrt(@as(f32, @floatFromInt(2 * d))));
+                try b.noise(try b.label("blk.{d}.loop_{s}_ctrl_gain.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
+                try b.noise(try b.label("blk.{d}.loop_{s}_ctrl_forget.weight", .{ i, part }), &.{ k.gate_rank, d }, 0.1);
+            }
+            try b.noise(try b.label("blk.{d}.loop_msg_query.weight", .{i}), &.{ d, 4 }, 0.1);
+        }
     }
 }
 

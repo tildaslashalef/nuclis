@@ -1,0 +1,37 @@
+{
+ "schema_version": 1,
+ "tool": "nuclis eval",
+ "executor": "metal",
+ "kv": "f16",
+ "revision": "1d63ba0bdcc0-dirty",
+ "model_file": "Inkling-2-Mini-UD-Q4_K_XL.gguf",
+ "model_bytes": 17629760736,
+ "model_sha256": "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3",
+ "text_file": "wiki.test.raw",
+ "text_sha256": "173c87a53759e0201f33e0ccf978e510c2042d7f2cb78229d9a50d79b9e7dd08",
+ "ctx": 512,
+ "chunks": 8,
+ "flags": [
+  "--backend",
+  "metal",
+  "--kv",
+  "f16",
+  "--ctx-size",
+  "512",
+  "--chunks",
+  "8"
+ ],
+ "ppl": 7.6582,
+ "ppl_error": 0.43,
+ "chunk_ppl": [
+  5.2454,
+  6.4793,
+  5.9532,
+  6.5773,
+  6.7217,
+  7.1034,
+  7.5507,
+  7.6582
+ ],
+ "date": "2026-11-27"
+}

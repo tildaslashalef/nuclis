@@ -183,8 +183,9 @@ pub const Runtime = struct {
         r.token_norm = try view.vector(a, binding.token_embedding_norm);
         r.output_norm = try view.vector(a, binding.output_norm);
         r.output_query = try view.vector(a, binding.output_residual_query);
-        r.loop_query = try view.vector(a, binding.loop_residual_query);
-        r.loop_kv_query = try view.vector(a, binding.loop_kv_residual_query);
+        r.loop_query = try a.alloc(f32, model.loop_queries * E);
+        r.loop_kv_query = try a.alloc(f32, model.loop_queries * E);
+        try model.loopQueries(view, &binding, r.loop_query, r.loop_kv_query);
         r.constants = try a.alloc(Constants, model.stored_blocks);
         for (&binding.blocks, r.constants) |*block, *c| {
             const opt = struct {

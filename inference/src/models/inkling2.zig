@@ -21,12 +21,13 @@ const weights = @import("../runtime/weights.zig");
 const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
-pub const architecture = "inkling2";
+pub const architecture = "inkling2_loop";
 pub const profile = "inkling2_mini";
 
-/// Applications of a block: `inkling2.block_count`.
+/// Block applications: the stored blocks with the core run `loops` times.
 pub const block_count = if (tiny_models) 24 else 48;
-/// Blocks whose weights the file stores: `blk.0` … `blk.{stored_blocks - 1}`.
+/// Blocks whose weights the file stores (`inkling2_loop.block_count`):
+/// `blk.0` … `blk.{stored_blocks - 1}`.
 pub const stored_blocks = if (tiny_models) 18 else 24;
 pub const core_start = 6;
 pub const core_end = if (tiny_models) 12 else 18;
@@ -136,6 +137,9 @@ pub const Loop = struct {
     down: [4]*const Tensor,
     gain: [4]*const Tensor,
     forget: [4]*const Tensor,
+    /// `loop_msg_query`, `[embedding, 4]`: the depth-mix queries of the
+    /// four messages, in module order (q, k, v, ffn).
+    messages: *const Tensor,
 };
 
 pub const Block = struct {
@@ -183,11 +187,26 @@ pub const Binding = struct {
     output: *const Tensor,
     output_norm: *const Tensor,
     output_residual_query: *const Tensor,
-    loop_residual_query: *const Tensor,
-    loop_kv_residual_query: *const Tensor,
     blocks: [stored_blocks]Block,
     summary: Summary,
 };
+
+/// The loop's depth-mix queries as the executors read them: `residual` and
+/// `kv` each `loop_queries × embedding`, core block j at rows 2j and 2j + 1.
+/// From each core block's `loop_msg_query` rows (q, k, v, ffn): `residual`
+/// takes q and ffn, `kv` takes k and v.
+pub fn loopQueries(view: weights.View, binding: *const Binding, residual: []f32, kv: []f32) !void {
+    if (residual.len != loop_queries * embedding or kv.len != loop_queries * embedding) return error.InvalidShape;
+    for (0..core_blocks) |j| {
+        const messages = binding.blocks[core_start + j].loop.?.messages;
+        const raw = try view.bytes(messages);
+        if (messages.encoding_id != 0 or raw.len != 4 * embedding * 4) return error.InvalidShape;
+        const rows = [4][]f32{ residual[2 * j * embedding ..][0..embedding], kv[2 * j * embedding ..][0..embedding], kv[(2 * j + 1) * embedding ..][0..embedding], residual[(2 * j + 1) * embedding ..][0..embedding] };
+        for (rows, 0..) |row, m| for (row, 0..) |*v, i| {
+            v.* = @bitCast(std.mem.readInt(u32, raw[(m * embedding + i) * 4 ..][0..4], .little));
+        };
+    }
+}
 
 pub const Error = models.BindError;
 
@@ -207,47 +226,50 @@ pub const Plan = @import("inkling2_metal.zig").Plan;
 
 const IntegerSetting = struct { key: []const u8, value: u64 };
 const integer_settings = [_]IntegerSetting{
-    .{ .key = "inkling2.block_count", .value = block_count },
-    .{ .key = "inkling2.context_length", .value = context_length },
-    .{ .key = "inkling2.embedding_length", .value = embedding },
-    .{ .key = "inkling2.feed_forward_length", .value = expert_feed_forward },
-    .{ .key = "inkling2.expert_count", .value = experts },
-    .{ .key = "inkling2.expert_used_count", .value = experts_used },
-    .{ .key = "inkling2.expert_feed_forward_length", .value = expert_feed_forward },
-    .{ .key = "inkling2.attention.key_length", .value = head_size },
-    .{ .key = "inkling2.attention.value_length", .value = head_size },
-    .{ .key = "inkling2.attention.key_length_swa", .value = head_size },
-    .{ .key = "inkling2.attention.value_length_swa", .value = head_size },
-    .{ .key = "inkling2.attention.sliding_window", .value = window },
-    .{ .key = "inkling2.attention.relative_length", .value = relative_length },
-    .{ .key = "inkling2.attention.relative_extent", .value = relative_extent },
-    .{ .key = "inkling2.attention.log_scale_floor", .value = log_scale_floor },
-    .{ .key = "inkling2.rope.dimension_count", .value = 0 },
-    .{ .key = "inkling2.num_loops", .value = loops },
-    .{ .key = "inkling2.loop.core_start", .value = core_start },
-    .{ .key = "inkling2.loop.core_end", .value = core_end },
-    .{ .key = "inkling2.loop.gate_rank", .value = gate_rank },
-    .{ .key = "inkling2.attn_res.block_size", .value = residual_span },
-    .{ .key = "inkling2.shortconv.l_cache", .value = conv_taps },
-    .{ .key = "inkling2.vocab_size", .value = padded_vocabulary },
-    .{ .key = "inkling2.vocab_size_unpadded", .value = vocabulary },
+    .{ .key = "inkling2_loop.block_count", .value = stored_blocks },
+    .{ .key = "inkling2_loop.context_length", .value = context_length },
+    .{ .key = "inkling2_loop.embedding_length", .value = embedding },
+    .{ .key = "inkling2_loop.feed_forward_length", .value = expert_feed_forward },
+    .{ .key = "inkling2_loop.expert_count", .value = experts },
+    .{ .key = "inkling2_loop.expert_used_count", .value = experts_used },
+    .{ .key = "inkling2_loop.expert_feed_forward_length", .value = expert_feed_forward },
+    .{ .key = "inkling2_loop.attention.key_length", .value = head_size },
+    .{ .key = "inkling2_loop.attention.value_length", .value = head_size },
+    .{ .key = "inkling2_loop.attention.key_length_swa", .value = head_size },
+    .{ .key = "inkling2_loop.attention.value_length_swa", .value = head_size },
+    .{ .key = "inkling2_loop.attention.sliding_window", .value = window },
+    .{ .key = "inkling2_loop.attention.relative_length", .value = relative_length },
+    .{ .key = "inkling2_loop.attention.relative_extent", .value = relative_extent },
+    .{ .key = "inkling2_loop.attention.log_scale_floor", .value = log_scale_floor },
+    .{ .key = "inkling2_loop.rope.dimension_count", .value = 0 },
+    .{ .key = "inkling2_loop.loop.count", .value = loops },
+    .{ .key = "inkling2_loop.loop.start", .value = core_start },
+    .{ .key = "inkling2_loop.loop.end", .value = core_end },
+    .{ .key = "inkling2_loop.loop.gate_rank", .value = gate_rank },
+    .{ .key = "inkling2_loop.attn_res.block_size", .value = residual_span },
+    .{ .key = "inkling2_loop.shortconv.l_cache", .value = conv_taps },
+    .{ .key = "inkling2_loop.vocab_size", .value = padded_vocabulary },
+    .{ .key = "inkling2_loop.vocab_size_unpadded", .value = vocabulary },
 };
 const FloatSetting = struct { key: []const u8, value: f32 };
 const float_settings = [_]FloatSetting{
-    .{ .key = "inkling2.attention.layer_norm_rms_epsilon", .value = rms_epsilon },
-    .{ .key = "inkling2.expert_weights_scale", .value = expert_weights_scale },
-    .{ .key = "inkling2.activation.situ_beta", .value = situ_beta },
-    .{ .key = "inkling2.activation.situ_linear_beta", .value = situ_linear_beta },
-    .{ .key = "inkling2.final_logit_softcapping", .value = final_softcap },
-    .{ .key = "inkling2.attention.qk_clip", .value = qk_clip },
-    .{ .key = "inkling2.attention.relative_clip", .value = relative_clip },
-    .{ .key = "inkling2.attention.log_scale_alpha", .value = log_scale_alpha },
+    .{ .key = "inkling2_loop.attention.layer_norm_rms_epsilon", .value = rms_epsilon },
+    .{ .key = "inkling2_loop.expert_weights_scale", .value = expert_weights_scale },
+    .{ .key = "inkling2_loop.activation.situ_beta", .value = situ_beta },
+    .{ .key = "inkling2_loop.activation.situ_linear_beta", .value = situ_linear_beta },
+    .{ .key = "inkling2_loop.final_logit_softcapping", .value = final_softcap },
+    .{ .key = "inkling2_loop.attention.qk_clip", .value = qk_clip },
+    .{ .key = "inkling2_loop.attention.relative_clip", .value = relative_clip },
+    .{ .key = "inkling2_loop.attention.log_scale_alpha", .value = log_scale_alpha },
 };
-/// The per-application arrays, `block_count` long.
+/// Whether the loop's passes differ beyond the controllers: false, the only
+/// schedule this adapter runs.
+const varying_key = "inkling2_loop.loop.varying";
+/// The per-stored-block arrays, `stored_blocks` long.
 const array_keys = [_][]const u8{
-    "inkling2.attention.head_count",
-    "inkling2.attention.head_count_kv",
-    "inkling2.attention.sliding_window_pattern",
+    "inkling2_loop.attention.head_count",
+    "inkling2_loop.attention.head_count_kv",
+    "inkling2_loop.attention.sliding_window_pattern",
 };
 
 /// Integer metadata regardless of the writer's chosen width or signedness.
@@ -259,18 +281,18 @@ fn integer(doc: *const gguf.Document, key: []const u8) Error!u64 {
     };
 }
 
-/// A per-application array's retained values, `block_count` of them.
-fn perApplication(doc: *const gguf.Document, key: []const u8) Error![]const gguf.Value {
+/// A per-stored-block array's retained values, `stored_blocks` of them.
+fn perBlock(doc: *const gguf.Document, key: []const u8) Error![]const gguf.Value {
     const array = switch (doc.get(key) orelse return error.MissingMetadata) {
         .array => |a| a,
         else => return error.InvalidMetadata,
     };
-    if (array.count != block_count) return error.UnsupportedConfiguration;
+    if (array.count != stored_blocks) return error.UnsupportedConfiguration;
     return array.values orelse error.InvalidMetadata;
 }
 
 fn expectCounts(doc: *const gguf.Document, key: []const u8, expected: u64) Error!void {
-    for (try perApplication(doc, key)) |value| {
+    for (try perBlock(doc, key)) |value| {
         const n: u64 = switch (value) {
             .unsigned => |n| n,
             .signed => |n| if (n < 0) return error.InvalidMetadata else @intCast(n),
@@ -295,11 +317,15 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
     }
     try expectCounts(doc, array_keys[0], heads);
     try expectCounts(doc, array_keys[1], kv_heads);
-    // The pattern marks a sliding application true.
-    for (try perApplication(doc, array_keys[2]), 0..) |value, application| switch (value) {
-        .boolean => |sliding| if (sliding == isGlobal(application)) return error.UnsupportedConfiguration,
+    // The pattern marks a sliding stored block true.
+    for (try perBlock(doc, array_keys[2]), 0..) |value, stored| switch (value) {
+        .boolean => |sliding| if (sliding == (kindOf(stored) == .global)) return error.UnsupportedConfiguration,
         else => return error.InvalidMetadata,
     };
+    switch (doc.get(varying_key) orelse return error.MissingMetadata) {
+        .boolean => |varying| if (varying) return error.UnsupportedConfiguration,
+        else => return error.InvalidMetadata,
+    }
     // The tokenizer covers exactly the unpadded rows (`vocab_size_unpadded`,
     // checked above); `bind` holds the head to `vocab_size`.
     const tokens = switch (doc.get("tokenizer.ggml.tokens") orelse return error.MissingMetadata) {
@@ -308,7 +334,7 @@ fn validateMetadata(doc: *const gguf.Document) Error!void {
     };
     if (tokens.element_type != .string or tokens.count != vocabulary) return error.UnsupportedConfiguration;
     for (doc.metadata) |entry| {
-        if (std.mem.startsWith(u8, entry.key, "inkling2.") and !knownArchitectureKey(entry.key))
+        if (std.mem.startsWith(u8, entry.key, architecture ++ ".") and !knownArchitectureKey(entry.key))
             return error.UnsupportedConfiguration;
     }
 }
@@ -317,7 +343,7 @@ fn knownArchitectureKey(key: []const u8) bool {
     for (integer_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
     for (float_settings) |setting| if (std.mem.eql(u8, key, setting.key)) return true;
     for (array_keys) |known| if (std.mem.eql(u8, key, known)) return true;
-    return false;
+    return std.mem.eql(u8, key, varying_key);
 }
 
 const Storage = enum { f32, matrix };
@@ -400,13 +426,14 @@ const Binder = struct {
         };
     }
     fn loop(self: *Binder, index: usize) Error!Loop {
-        const parts = [_][]const u8{ "attn", "k", "v", "mlp" };
+        const parts = [_][]const u8{ "q", "k", "v", "ffn" };
         var result: Loop = undefined;
         inline for (parts, 0..) |part, m| {
-            result.down[m] = try self.weight(index, "loop_" ++ part ++ "_down.weight", &.{ 2 * embedding, gate_rank }, .f32);
-            result.gain[m] = try self.weight(index, "loop_" ++ part ++ "_gain.weight", &.{ gate_rank, embedding }, .f32);
-            result.forget[m] = try self.weight(index, "loop_" ++ part ++ "_forget.weight", &.{ gate_rank, embedding }, .f32);
+            result.down[m] = try self.weight(index, "loop_" ++ part ++ "_ctrl_down.weight", &.{ 2 * embedding, gate_rank }, .f32);
+            result.gain[m] = try self.weight(index, "loop_" ++ part ++ "_ctrl_gain.weight", &.{ gate_rank, embedding }, .f32);
+            result.forget[m] = try self.weight(index, "loop_" ++ part ++ "_ctrl_forget.weight", &.{ gate_rank, embedding }, .f32);
         }
+        result.messages = try self.weight(index, "loop_msg_query.weight", &.{ embedding, 4 }, .f32);
         return result;
     }
 };
@@ -430,8 +457,6 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     result.output = try binder.take("output.weight", &.{ embedding, padded_vocabulary }, .matrix);
     result.output_norm = try binder.take("output_norm.weight", &.{embedding}, .f32);
     result.output_residual_query = try binder.take("output_res_query.weight", &.{embedding}, .f32);
-    result.loop_residual_query = try binder.take("loop_res_query.weight", &.{ embedding, loop_queries }, .f32);
-    result.loop_kv_residual_query = try binder.take("loop_kv_res_query.weight", &.{ embedding, loop_queries }, .f32);
     for (&result.blocks, 0..) |*block, index| block.* = try binder.block(index);
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
     result.summary = .{
@@ -467,11 +492,11 @@ test "the schedule: 48 applications over 24 stored blocks, global every sixth" {
     try std.testing.expect(isGlobal(5) and isGlobal(47) and !isGlobal(0) and !isGlobal(42));
 }
 
-test "the pinned inventory binds: 734 tensors, the looped core, the padded head" {
+test "the pinned inventory binds: 744 tensors, the looped core, the padded head" {
     var doc = try inventoryDocument(std.testing.allocator);
     defer doc.deinit();
     const binding = try bind(std.testing.allocator, &doc);
-    try std.testing.expectEqual(@as(u32, 734), binding.summary.text_tensors);
+    try std.testing.expectEqual(@as(u32, 744), binding.summary.text_tensors);
     try std.testing.expectEqual(@as(u32, 48), binding.summary.decoder_layers);
     try std.testing.expect(binding.summary.inference_available and !binding.summary.metal_available);
     try std.testing.expectEqual(@as(u64, 201024), binding.output.dimensions[1]);
@@ -486,7 +511,7 @@ test "the pinned inventory binds: 734 tensors, the looped core, the padded head"
         if (block.attention_residual_query) |q| try std.testing.expectEqual(@as(usize, if (kindOf(i) == .global) 2 else 1), q.dimensions.len);
     }
     try std.testing.expectEqual(Kind.global, binding.blocks[23].kind());
-    try std.testing.expectEqualStrings("blk.17.loop_mlp_forget.weight", binding.blocks[17].loop.?.forget[3].name);
+    try std.testing.expectEqualStrings("blk.17.loop_ffn_ctrl_forget.weight", binding.blocks[17].loop.?.forget[3].name);
 }
 
 const Mutation = union(enum) {
@@ -496,6 +521,7 @@ const Mutation = union(enum) {
     add_tensor: []const u8,
     set_unsigned: struct { key: []const u8, value: u64 },
     set_float: struct { key: []const u8, value: f64 },
+    set_boolean: struct { key: []const u8, value: bool },
     set_element: struct { key: []const u8, index: usize, value: gguf.Value },
     set_count: struct { key: []const u8, count: u64 },
     drop_key: []const u8,
@@ -537,6 +563,9 @@ fn mutated(mutations: []const Mutation) !gguf.Document {
             .set_float => |s| for (metadata) |*m| if (std.mem.eql(u8, m.key, s.key)) {
                 m.value = .{ .float = s.value };
             },
+            .set_boolean => |s| for (metadata) |*m| if (std.mem.eql(u8, m.key, s.key)) {
+                m.value = .{ .boolean = s.value };
+            },
             .set_element => |s| for (metadata) |*m| if (std.mem.eql(u8, m.key, s.key)) {
                 const values = try alloc.dupe(gguf.Value, m.value.array.values.?);
                 values[s.index] = s.value;
@@ -564,47 +593,49 @@ fn mutated(mutations: []const Mutation) !gguf.Document {
 test "deviations from the pinned configuration are typed rejections" {
     const cases = [_]struct { mutation: Mutation, expected: anyerror }{
         // The schedule and its arrays.
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.block_count", .value = 47 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.num_loops", .value = 2 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.loop.core_start", .value = 3 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.loop.core_end", .value = 12 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.attn_res.block_size", .value = 4 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_element = .{ .key = "inkling2.attention.head_count", .index = 30, .value = .{ .signed = 16 } } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_element = .{ .key = "inkling2.attention.head_count_kv", .index = 0, .value = .{ .signed = 4 } } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_element = .{ .key = "inkling2.attention.head_count_kv", .index = 0, .value = .{ .float = 8 } } }, .expected = error.InvalidMetadata },
-        .{ .mutation = .{ .set_element = .{ .key = "inkling2.attention.sliding_window_pattern", .index = 5, .value = .{ .boolean = true } } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_element = .{ .key = "inkling2.attention.sliding_window_pattern", .index = 0, .value = .{ .boolean = false } } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_count = .{ .key = "inkling2.attention.sliding_window_pattern", .count = 24 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .drop_key = "inkling2.attention.head_count" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.block_count", .value = 48 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.loop.count", .value = 2 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.loop.start", .value = 3 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.loop.end", .value = 12 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_boolean = .{ .key = "inkling2_loop.loop.varying", .value = true } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .drop_key = "inkling2_loop.loop.varying" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.attn_res.block_size", .value = 4 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_element = .{ .key = "inkling2_loop.attention.head_count", .index = 20, .value = .{ .signed = 16 } } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_element = .{ .key = "inkling2_loop.attention.head_count_kv", .index = 0, .value = .{ .signed = 4 } } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_element = .{ .key = "inkling2_loop.attention.head_count_kv", .index = 0, .value = .{ .float = 8 } } }, .expected = error.InvalidMetadata },
+        .{ .mutation = .{ .set_element = .{ .key = "inkling2_loop.attention.sliding_window_pattern", .index = 5, .value = .{ .boolean = true } } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_element = .{ .key = "inkling2_loop.attention.sliding_window_pattern", .index = 0, .value = .{ .boolean = false } } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_count = .{ .key = "inkling2_loop.attention.sliding_window_pattern", .count = 48 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .drop_key = "inkling2_loop.attention.head_count" }, .expected = error.MissingMetadata },
         // Geometry, windows, experts.
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.attention.sliding_window", .value = 512 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.attention.relative_extent", .value = 2048 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.attention.log_scale_floor", .value = 4096 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.expert_used_count", .value = 4 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.rope.dimension_count", .value = 64 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_float = .{ .key = "inkling2.attention.qk_clip", .value = 16 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_float = .{ .key = "inkling2.attention.log_scale_alpha", .value = 0.2 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_float = .{ .key = "inkling2.final_logit_softcapping", .value = 20 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.activation.situ_beta", .value = 4 } }, .expected = error.InvalidMetadata },
-        .{ .mutation = .{ .drop_key = "inkling2.attention.layer_norm_rms_epsilon" }, .expected = error.MissingMetadata },
-        .{ .mutation = .{ .add_key = "inkling2.rope.freq_base" }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.attention.sliding_window", .value = 512 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.attention.relative_extent", .value = 2048 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.attention.log_scale_floor", .value = 4096 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.expert_used_count", .value = 4 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.rope.dimension_count", .value = 64 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_float = .{ .key = "inkling2_loop.attention.qk_clip", .value = 16 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_float = .{ .key = "inkling2_loop.attention.log_scale_alpha", .value = 0.2 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_float = .{ .key = "inkling2_loop.final_logit_softcapping", .value = 20 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.activation.situ_beta", .value = 4 } }, .expected = error.InvalidMetadata },
+        .{ .mutation = .{ .drop_key = "inkling2_loop.attention.layer_norm_rms_epsilon" }, .expected = error.MissingMetadata },
+        .{ .mutation = .{ .add_key = "inkling2_loop.rope.freq_base" }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .set_unsigned = .{ .key = "general.quantization_version", .value = 1 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .drop_key = "general.architecture" }, .expected = error.MissingMetadata },
         // The vocabulary rule: tokens = unpadded ≤ padded = the head's rows.
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.vocab_size_unpadded", .value = 200000 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.vocab_size_unpadded", .value = 200000 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .set_count = .{ .key = "tokenizer.ggml.tokens", .count = 201024 } }, .expected = error.UnsupportedConfiguration },
-        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2.vocab_size", .value = 200058 } }, .expected = error.UnsupportedConfiguration },
+        .{ .mutation = .{ .set_unsigned = .{ .key = "inkling2_loop.vocab_size", .value = 200058 } }, .expected = error.UnsupportedConfiguration },
         .{ .mutation = .{ .reshape = .{ .name = "output.weight", .dimensions = &.{ 2304, 200058 } } }, .expected = error.InvalidTensorShape },
         // Tensors: the core's controllers, the kinds' inputs, the residual queries.
-        .{ .mutation = .{ .drop_tensor = "blk.6.loop_k_gain.weight" }, .expected = error.MissingTensor },
-        .{ .mutation = .{ .add_tensor = "blk.18.loop_k_gain.weight" }, .expected = error.UnexpectedTensor },
+        .{ .mutation = .{ .drop_tensor = "blk.6.loop_k_ctrl_gain.weight" }, .expected = error.MissingTensor },
+        .{ .mutation = .{ .add_tensor = "blk.18.loop_k_ctrl_gain.weight" }, .expected = error.UnexpectedTensor },
         .{ .mutation = .{ .add_tensor = "blk.0.attn_res_query.weight" }, .expected = error.UnexpectedTensor },
         .{ .mutation = .{ .add_tensor = "blk.5.attn_norm.weight" }, .expected = error.UnexpectedTensor },
         .{ .mutation = .{ .drop_tensor = "blk.11.attn_v_inp_norm.weight" }, .expected = error.MissingTensor },
         .{ .mutation = .{ .drop_tensor = "blk.4.attn_norm.weight" }, .expected = error.MissingTensor },
         .{ .mutation = .{ .reshape = .{ .name = "blk.5.attn_res_query.weight", .dimensions = &.{2304} } }, .expected = error.InvalidTensorShape },
         .{ .mutation = .{ .reshape = .{ .name = "blk.4.attn_res_query.weight", .dimensions = &.{ 2304, 3 } } }, .expected = error.InvalidTensorShape },
-        .{ .mutation = .{ .reshape = .{ .name = "loop_res_query.weight", .dimensions = &.{ 2304, 12 } } }, .expected = error.InvalidTensorShape },
+        .{ .mutation = .{ .reshape = .{ .name = "blk.6.loop_msg_query.weight", .dimensions = &.{ 2304, 2 } } }, .expected = error.InvalidTensorShape },
         .{ .mutation = .{ .reshape = .{ .name = "blk.5.attn_rel_bias.weight", .dimensions = &.{ 16, 512 } } }, .expected = error.InvalidTensorShape },
         .{ .mutation = .{ .drop_tensor = "blk.3.ffn_down_exps.scale" }, .expected = error.MissingTensor },
         .{ .mutation = .{ .add_tensor = "rope_freqs.weight" }, .expected = error.UnexpectedTensor },
@@ -627,7 +658,7 @@ test "a block without expert scales binds without them" {
     const binding = try bind(std.testing.allocator, &doc);
     try std.testing.expect(binding.blocks[3].gate_up_scale == null and binding.blocks[3].down_scale == null);
     try std.testing.expect(binding.blocks[2].gate_up_scale != null);
-    try std.testing.expectEqual(@as(u32, 732), binding.summary.text_tensors);
+    try std.testing.expectEqual(@as(u32, 742), binding.summary.text_tensors);
 }
 
 test "binding survives allocation failure without leaks" {

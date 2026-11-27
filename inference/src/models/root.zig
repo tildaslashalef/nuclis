@@ -114,8 +114,10 @@ test "adapters are looked up by architecture id" {
     try std.testing.expectEqualStrings("muse-glimmer", known[2]);
     try std.testing.expectEqual(Adapter.@"muse-glimmer", try select("muse-glimmer"));
     try std.testing.expect(registry.executableEncoding(.@"muse-glimmer", 13) and !registry.executableEncoding(.@"muse-glimmer", 30));
-    try std.testing.expectEqual(Adapter.inkling2, try select("inkling2"));
-    try std.testing.expect(registry.executableEncoding(.inkling2, 40) and !registry.executableEncoding(.inkling2, 12));
+    try std.testing.expectEqual(Adapter.inkling2_loop, try select("inkling2_loop"));
+    // The first encoding, which the Hub no longer serves, is refused.
+    try std.testing.expectError(error.UnknownArchitecture, select("inkling2"));
+    try std.testing.expect(registry.executableEncoding(.inkling2_loop, 40) and !registry.executableEncoding(.inkling2_loop, 12));
 }
 
 test "validate through the registry reaches the third family" {

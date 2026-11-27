@@ -6076,12 +6076,12 @@ pub fn main(init: std.process.Init) !void {
         // Encoder stamps lie inside the command buffer's GPU span, so their sum
         // cannot exceed it; the difference is the encoder-boundary cost.
         // Encoder stamps and the command buffer's GPUStart/EndTime come from
-        // the same timeline but are sampled independently; on this ~60 µs
-        // buffer the stamps overran the span by 8 to 10 µs in most runs and
-        // by 22 µs in one (62.6 µs span, 84.6 µs attributed). Allow that jitter.
+        // the same timeline but are sampled independently, and the overrun
+        // grows with the span when the GPU runs slow: 22 µs on a 63 µs span,
+        // 120 µs on a 597 µs one. Allow 40 µs or a quarter of the span.
         const attributed = mv.seconds + add.seconds;
         std.debug.print("profile check: command buffer {d:.1} us, attributed {d:.1} us\n", .{ p.gpu_seconds * 1e6, attributed * 1e6 });
-        if (!(p.gpu_seconds + 40e-6 >= attributed)) return error.ProfileExceedsCommandBuffer;
+        if (!(p.gpu_seconds + @max(40e-6, p.gpu_seconds / 4) >= attributed)) return error.ProfileExceedsCommandBuffer;
         p.clear();
         if (p.totals.count() != 0 or p.command_buffers != 0 or p.unsampled != 0) return error.ProfileClearFailed;
         // An empty pass commits nothing and must not count as a command buffer.

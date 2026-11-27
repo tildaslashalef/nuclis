@@ -90,11 +90,19 @@ are byte-identical at the new commit:
 | `unsloth/Inkling-2-Mini-GGUF` | `45fd08764f2b0bf16b03a5483a80e5c7aaec8772` | `Inkling-2-Mini-UD-Q4_K_XL.gguf` | 17,629,759,456 | `e62d463c135ffe283df8d94b279a96ca145ac128b52ce854478613045bf4de15` |
 | | | `mmproj-F16.gguf` | 639,348,160 | `3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f` |
 | | | `dspark-Inkling-2-Mini-Q8_0.gguf` | 402,278,560 | `2ec78510da837e8fc3be54a14757a0c5fbd2d8d9e85a0d92853fafdf674f3773` |
+| `unsloth/Inkling-2-Mini-GGUF` | `8078d149286eec7193795413b9e0643da6d11fa1` | `Inkling-2-Mini-UD-Q4_K_XL.gguf` | 17,629,760,736 | `e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3` |
+| | | `mmproj-F16.gguf` | 639,348,160 | `3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f` |
+| | | `dspark-Inkling-2-Mini-Q8_0.gguf` | 503,889,952 | `3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0` |
 
 The Inkling 2 Mini rows were pulled and verified on 2026-11-20 at
 `b08906e3105be6a53c7dfdd4fd8e1e272eb01221`, which the Hub no longer
 serves; on 2026-11-26 `nuclis model inspect` read the same three
 digests at the commit above, which the rows pin ([inkling2.md](../../models/inkling2.md)).
+On 2026-11-27 the index moved to `main` at `8078d149…`, pulled and
+verified that day: the main file re-encoded as `inkling2_loop` (24 stored
+blocks in the header, the loop's queries per core block), whose CPU trace
+and eight perplexity windows equal the earlier file's exactly; the same
+projector; and a new, larger DSpark drafter.
 The VoiceTut-TTS row was inspected and verified on 2026-11-22 ([omnivoice.md](../../models/omnivoice.md)).
 The Drama 3 row was pulled and verified on 2026-10-30 ([drama3.md](../../models/drama3.md)).
 The DFlash2 row is `qwen3.8-27b`'s second draft variant, which the index

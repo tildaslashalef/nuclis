@@ -233,8 +233,9 @@ pub const Plan = struct {
         self.token_norm = try self.constant(&created, binding.token_embedding_norm);
         self.output_norm = try self.constant(&created, binding.output_norm);
         self.output_query = try self.constant(&created, binding.output_residual_query);
-        self.loop_query = try self.constant(&created, binding.loop_residual_query);
-        self.loop_kv_query = try self.constant(&created, binding.loop_kv_residual_query);
+        self.loop_query = try created.create(model.loop_queries * E * 4);
+        self.loop_kv_query = try created.create(model.loop_queries * E * 4);
+        try model.loopQueries(view, &binding, self.loop_query.floats()[0 .. model.loop_queries * E], self.loop_kv_query.floats()[0 .. model.loop_queries * E]);
         self.ones = try created.create(hd * 4);
         @memset(self.ones.floats(), 1);
         self.zero_map = try created.create(4);

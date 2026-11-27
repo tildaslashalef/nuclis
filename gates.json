@@ -68,9 +68,7 @@
    "artifact": "voicetut-tts"
   },
   "inkling2": {
-   "path": "~/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/Inkling-2-Mini-UD-Q4_K_XL.gguf",
-   "note": "no index entry until Inkling 2 is accepted; the file the family card pins",
-   "mmproj": "~/.nuclis/models/unsloth/Inkling-2-Mini-GGUF/mmproj-F16.gguf"
+   "artifact": "inkling-2-mini"
   }
  },
  "data": {
@@ -2876,6 +2874,33 @@
     "kind": "exit"
    },
    "evidence": "docs/models/inkling2.md#metal"
+  },
+  {
+   "name": "inkling2-perplexity",
+   "family": "inkling2",
+   "tier": "verify",
+   "model": "inkling2",
+   "data": [
+    "wikitext-2"
+   ],
+   "command": [
+    "{nuclis}",
+    "eval",
+    "--backend",
+    "metal",
+    "--model",
+    "{model}",
+    "--file",
+    ".reference/eval/wikitext-2-raw/wiki.test.raw",
+    "--reference",
+    "tests/fixtures/perplexity/inkling2-mini-wikitext2-c512x8.json",
+    "--chunks",
+    "2"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/models/inkling2.md#numbers"
   },
   {
    "name": "inkling2-vision-metal",

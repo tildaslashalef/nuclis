@@ -248,7 +248,7 @@ pub fn main(init: std.process.Init) !void {
         else if (draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(gemma4_spec, alloc, init.io, &mapped, use_metal),
         // No Muse Glimmer model file is gated, so none is checked.
         .@"muse-glimmer" => return error.UnsupportedFamily,
-        .inkling2 => if (vision_check) |projector|
+        .inkling2_loop => if (vision_check) |projector|
             if (vision_image) |image|
                 try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, null)
             else

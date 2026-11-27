@@ -1,74 +1,74 @@
 {
  "metadata": {
-  "general.architecture": "inkling2",
+  "general.architecture": "inkling2_loop",
   "general.type": "model",
   "general.name": "Inkling-2-Mini",
   "general.size_label": "128x1.8B",
-  "inkling2.block_count": 48,
-  "inkling2.context_length": 1048576,
-  "inkling2.embedding_length": 2304,
-  "inkling2.feed_forward_length": 1152,
-  "inkling2.attention.head_count": {
-   "count": 48,
-   "offset": 414,
+  "inkling2_loop.block_count": 24,
+  "inkling2_loop.context_length": 1048576,
+  "inkling2_loop.embedding_length": 2304,
+  "inkling2_loop.feed_forward_length": 1152,
+  "inkling2_loop.attention.head_count": {
+   "count": 24,
+   "offset": 444,
    "type": 5,
-   "values": [24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24]
+   "values": [24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24,24]
   },
-  "inkling2.attention.head_count_kv": {
-   "count": 48,
-   "offset": 662,
+  "inkling2_loop.attention.head_count_kv": {
+   "count": 24,
+   "offset": 601,
    "type": 5,
-   "values": [8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]
+   "values": [8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8,8]
   },
-  "inkling2.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
-  "inkling2.expert_count": 128,
-  "inkling2.expert_used_count": 8,
-  "inkling2.attention.key_length": 128,
-  "inkling2.attention.value_length": 128,
-  "inkling2.num_loops": 3,
-  "inkling2.loop.core_start": 6,
-  "inkling2.loop.core_end": 18,
-  "inkling2.loop.gate_rank": 64,
-  "inkling2.vocab_size": 201024,
-  "inkling2.vocab_size_unpadded": 200058,
-  "inkling2.expert_feed_forward_length": 1152,
-  "inkling2.attention.key_length_swa": 128,
-  "inkling2.attention.value_length_swa": 128,
-  "inkling2.rope.dimension_count": 0,
-  "inkling2.attention.sliding_window": 1024,
-  "inkling2.attention.sliding_window_pattern": {
-   "count": 48,
-   "offset": 1622,
+  "inkling2_loop.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+  "inkling2_loop.expert_count": 128,
+  "inkling2_loop.expert_used_count": 8,
+  "inkling2_loop.attention.key_length": 128,
+  "inkling2_loop.attention.value_length": 128,
+  "inkling2_loop.loop.count": 3,
+  "inkling2_loop.loop.start": 6,
+  "inkling2_loop.loop.end": 18,
+  "inkling2_loop.loop.gate_rank": 64,
+  "inkling2_loop.vocab_size": 201024,
+  "inkling2_loop.vocab_size_unpadded": 200058,
+  "inkling2_loop.expert_feed_forward_length": 1152,
+  "inkling2_loop.attention.key_length_swa": 128,
+  "inkling2_loop.attention.value_length_swa": 128,
+  "inkling2_loop.rope.dimension_count": 0,
+  "inkling2_loop.attention.sliding_window": 1024,
+  "inkling2_loop.attention.sliding_window_pattern": {
+   "count": 24,
+   "offset": 1541,
    "type": 7,
-   "values": [1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0]
+   "values": [1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0,1,1,1,1,1,0]
   },
-  "inkling2.shortconv.l_cache": 4,
-  "inkling2.expert_weights_scale": 8.0,
-  "inkling2.activation.situ_beta": 4.0,
-  "inkling2.activation.situ_linear_beta": 25.0,
-  "inkling2.attn_res.block_size": 6,
-  "inkling2.final_logit_softcapping": 30.0,
-  "inkling2.attention.relative_length": 16,
-  "inkling2.attention.relative_extent": 1024,
-  "inkling2.attention.qk_clip": 22.627416610717773,
-  "inkling2.attention.relative_clip": 8.0,
-  "inkling2.attention.log_scale_floor": 8192,
-  "inkling2.attention.log_scale_alpha": 0.10000000149011612,
+  "inkling2_loop.shortconv.l_cache": 4,
+  "inkling2_loop.expert_weights_scale": 8.0,
+  "inkling2_loop.activation.situ_beta": 4.0,
+  "inkling2_loop.activation.situ_linear_beta": 25.0,
+  "inkling2_loop.attn_res.block_size": 6,
+  "inkling2_loop.final_logit_softcapping": 30.0,
+  "inkling2_loop.attention.relative_length": 16,
+  "inkling2_loop.attention.relative_extent": 1024,
+  "inkling2_loop.attention.qk_clip": 22.627416610717773,
+  "inkling2_loop.attention.relative_clip": 8.0,
+  "inkling2_loop.attention.log_scale_floor": 8192,
+  "inkling2_loop.attention.log_scale_alpha": 0.10000000149011612,
   "tokenizer.ggml.model": "gpt2",
   "tokenizer.ggml.pre": "inkling2",
   "tokenizer.ggml.tokens": {
    "count": 200058,
-   "offset": 2371,
+   "offset": 2326,
    "type": 8
   },
   "tokenizer.ggml.token_type": {
    "count": 200058,
-   "offset": 3509194,
+   "offset": 3509149,
    "type": 5
   },
   "tokenizer.ggml.merges": {
    "count": 424413,
-   "offset": 4309471,
+   "offset": 4309426,
    "type": 8
   },
   "tokenizer.ggml.eos_token_id": 200006,
@@ -84,7 +84,7 @@
   "quantize.imatrix.chunks_count": 892,
   "tokenizer.chat_template": {
    "length": 6868,
-   "offset": 11924716,
+   "offset": 11924671,
    "sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
    "head": "{%- set effort_map = {\"none\": 0.0, \"minimal\": 0.1, \"low\": 0.2, \""
   },
@@ -93,25 +93,10 @@
   "general.sampling.temp": 1.0,
   "general.sampling.top_k": 0,
   "general.sampling.top_p": 1.0,
-  "general.sampling.min_p": 0.0
+  "general.sampling.min_p": 0.0,
+  "inkling2_loop.loop.varying": false
  },
  "tensors": [
-  [
-   "loop_kv_res_query.weight",
-   [
-    2304,
-    24
-   ],
-   0
-  ],
-  [
-   "loop_res_query.weight",
-   [
-    2304,
-    24
-   ],
-   0
-  ],
   [
    "output.weight",
    [
@@ -1483,7 +1468,7 @@
    0
   ],
   [
-   "blk.6.loop_attn_down.weight",
+   "blk.6.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -1491,7 +1476,7 @@
    0
   ],
   [
-   "blk.6.loop_attn_forget.weight",
+   "blk.6.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -1499,7 +1484,7 @@
    0
   ],
   [
-   "blk.6.loop_attn_gain.weight",
+   "blk.6.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -1507,7 +1492,7 @@
    0
   ],
   [
-   "blk.6.loop_k_down.weight",
+   "blk.6.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -1515,7 +1500,7 @@
    0
   ],
   [
-   "blk.6.loop_k_forget.weight",
+   "blk.6.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -1523,7 +1508,7 @@
    0
   ],
   [
-   "blk.6.loop_k_gain.weight",
+   "blk.6.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -1531,7 +1516,7 @@
    0
   ],
   [
-   "blk.6.loop_mlp_down.weight",
+   "blk.6.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -1539,7 +1524,7 @@
    0
   ],
   [
-   "blk.6.loop_mlp_forget.weight",
+   "blk.6.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -1547,7 +1532,7 @@
    0
   ],
   [
-   "blk.6.loop_mlp_gain.weight",
+   "blk.6.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -1555,7 +1540,7 @@
    0
   ],
   [
-   "blk.6.loop_v_down.weight",
+   "blk.6.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -1563,7 +1548,7 @@
    0
   ],
   [
-   "blk.6.loop_v_forget.weight",
+   "blk.6.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -1571,7 +1556,7 @@
    0
   ],
   [
-   "blk.6.loop_v_gain.weight",
+   "blk.6.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -1766,7 +1751,7 @@
    0
   ],
   [
-   "blk.7.loop_attn_down.weight",
+   "blk.7.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -1774,7 +1759,7 @@
    0
   ],
   [
-   "blk.7.loop_attn_forget.weight",
+   "blk.7.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -1782,7 +1767,7 @@
    0
   ],
   [
-   "blk.7.loop_attn_gain.weight",
+   "blk.7.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -1790,7 +1775,7 @@
    0
   ],
   [
-   "blk.7.loop_k_down.weight",
+   "blk.7.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -1798,7 +1783,7 @@
    0
   ],
   [
-   "blk.7.loop_k_forget.weight",
+   "blk.7.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -1806,7 +1791,7 @@
    0
   ],
   [
-   "blk.7.loop_k_gain.weight",
+   "blk.7.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -1814,7 +1799,7 @@
    0
   ],
   [
-   "blk.7.loop_mlp_down.weight",
+   "blk.7.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -1822,7 +1807,7 @@
    0
   ],
   [
-   "blk.7.loop_mlp_forget.weight",
+   "blk.7.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -1830,7 +1815,7 @@
    0
   ],
   [
-   "blk.7.loop_mlp_gain.weight",
+   "blk.7.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -1838,7 +1823,7 @@
    0
   ],
   [
-   "blk.7.loop_v_down.weight",
+   "blk.7.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -1846,7 +1831,7 @@
    0
   ],
   [
-   "blk.7.loop_v_forget.weight",
+   "blk.7.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -1854,7 +1839,7 @@
    0
   ],
   [
-   "blk.7.loop_v_gain.weight",
+   "blk.7.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -2049,7 +2034,7 @@
    0
   ],
   [
-   "blk.8.loop_attn_down.weight",
+   "blk.8.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -2057,7 +2042,7 @@
    0
   ],
   [
-   "blk.8.loop_attn_forget.weight",
+   "blk.8.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -2065,7 +2050,7 @@
    0
   ],
   [
-   "blk.8.loop_attn_gain.weight",
+   "blk.8.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -2073,7 +2058,7 @@
    0
   ],
   [
-   "blk.8.loop_k_down.weight",
+   "blk.8.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -2081,7 +2066,7 @@
    0
   ],
   [
-   "blk.8.loop_k_forget.weight",
+   "blk.8.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -2089,7 +2074,7 @@
    0
   ],
   [
-   "blk.8.loop_k_gain.weight",
+   "blk.8.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -2097,7 +2082,7 @@
    0
   ],
   [
-   "blk.8.loop_mlp_down.weight",
+   "blk.8.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -2105,7 +2090,7 @@
    0
   ],
   [
-   "blk.8.loop_mlp_forget.weight",
+   "blk.8.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -2113,7 +2098,7 @@
    0
   ],
   [
-   "blk.8.loop_mlp_gain.weight",
+   "blk.8.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -2121,7 +2106,7 @@
    0
   ],
   [
-   "blk.8.loop_v_down.weight",
+   "blk.8.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -2129,7 +2114,7 @@
    0
   ],
   [
-   "blk.8.loop_v_forget.weight",
+   "blk.8.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -2137,7 +2122,7 @@
    0
   ],
   [
-   "blk.8.loop_v_gain.weight",
+   "blk.8.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -2332,7 +2317,7 @@
    0
   ],
   [
-   "blk.9.loop_attn_down.weight",
+   "blk.9.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -2340,7 +2325,7 @@
    0
   ],
   [
-   "blk.9.loop_attn_forget.weight",
+   "blk.9.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -2348,7 +2333,7 @@
    0
   ],
   [
-   "blk.9.loop_attn_gain.weight",
+   "blk.9.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -2356,7 +2341,7 @@
    0
   ],
   [
-   "blk.9.loop_k_down.weight",
+   "blk.9.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -2364,7 +2349,7 @@
    0
   ],
   [
-   "blk.9.loop_k_forget.weight",
+   "blk.9.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -2372,7 +2357,7 @@
    0
   ],
   [
-   "blk.9.loop_k_gain.weight",
+   "blk.9.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -2380,7 +2365,7 @@
    0
   ],
   [
-   "blk.9.loop_mlp_down.weight",
+   "blk.9.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -2388,7 +2373,7 @@
    0
   ],
   [
-   "blk.9.loop_mlp_forget.weight",
+   "blk.9.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -2396,7 +2381,7 @@
    0
   ],
   [
-   "blk.9.loop_mlp_gain.weight",
+   "blk.9.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -2404,7 +2389,7 @@
    0
   ],
   [
-   "blk.9.loop_v_down.weight",
+   "blk.9.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -2412,7 +2397,7 @@
    0
   ],
   [
-   "blk.9.loop_v_forget.weight",
+   "blk.9.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -2420,7 +2405,7 @@
    0
   ],
   [
-   "blk.9.loop_v_gain.weight",
+   "blk.9.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -2615,7 +2600,7 @@
    0
   ],
   [
-   "blk.10.loop_attn_down.weight",
+   "blk.10.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -2623,7 +2608,7 @@
    0
   ],
   [
-   "blk.10.loop_attn_forget.weight",
+   "blk.10.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -2631,7 +2616,7 @@
    0
   ],
   [
-   "blk.10.loop_attn_gain.weight",
+   "blk.10.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -2639,7 +2624,7 @@
    0
   ],
   [
-   "blk.10.loop_k_down.weight",
+   "blk.10.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -2647,7 +2632,7 @@
    0
   ],
   [
-   "blk.10.loop_k_forget.weight",
+   "blk.10.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -2655,7 +2640,7 @@
    0
   ],
   [
-   "blk.10.loop_k_gain.weight",
+   "blk.10.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -2663,7 +2648,7 @@
    0
   ],
   [
-   "blk.10.loop_mlp_down.weight",
+   "blk.10.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -2671,7 +2656,7 @@
    0
   ],
   [
-   "blk.10.loop_mlp_forget.weight",
+   "blk.10.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -2679,7 +2664,7 @@
    0
   ],
   [
-   "blk.10.loop_mlp_gain.weight",
+   "blk.10.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -2687,7 +2672,7 @@
    0
   ],
   [
-   "blk.10.loop_v_down.weight",
+   "blk.10.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -2695,7 +2680,7 @@
    0
   ],
   [
-   "blk.10.loop_v_forget.weight",
+   "blk.10.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -2703,7 +2688,7 @@
    0
   ],
   [
-   "blk.10.loop_v_gain.weight",
+   "blk.10.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -2929,7 +2914,7 @@
    0
   ],
   [
-   "blk.11.loop_attn_down.weight",
+   "blk.11.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -2937,7 +2922,7 @@
    0
   ],
   [
-   "blk.11.loop_attn_forget.weight",
+   "blk.11.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -2945,7 +2930,7 @@
    0
   ],
   [
-   "blk.11.loop_attn_gain.weight",
+   "blk.11.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -2953,7 +2938,7 @@
    0
   ],
   [
-   "blk.11.loop_k_down.weight",
+   "blk.11.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -2961,7 +2946,7 @@
    0
   ],
   [
-   "blk.11.loop_k_forget.weight",
+   "blk.11.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -2969,7 +2954,7 @@
    0
   ],
   [
-   "blk.11.loop_k_gain.weight",
+   "blk.11.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -2977,7 +2962,7 @@
    0
   ],
   [
-   "blk.11.loop_mlp_down.weight",
+   "blk.11.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -2985,7 +2970,7 @@
    0
   ],
   [
-   "blk.11.loop_mlp_forget.weight",
+   "blk.11.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -2993,7 +2978,7 @@
    0
   ],
   [
-   "blk.11.loop_mlp_gain.weight",
+   "blk.11.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -3001,7 +2986,7 @@
    0
   ],
   [
-   "blk.11.loop_v_down.weight",
+   "blk.11.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -3009,7 +2994,7 @@
    0
   ],
   [
-   "blk.11.loop_v_forget.weight",
+   "blk.11.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -3017,7 +3002,7 @@
    0
   ],
   [
-   "blk.11.loop_v_gain.weight",
+   "blk.11.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -3212,7 +3197,7 @@
    0
   ],
   [
-   "blk.12.loop_attn_down.weight",
+   "blk.12.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -3220,7 +3205,7 @@
    0
   ],
   [
-   "blk.12.loop_attn_forget.weight",
+   "blk.12.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -3228,7 +3213,7 @@
    0
   ],
   [
-   "blk.12.loop_attn_gain.weight",
+   "blk.12.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -3236,7 +3221,7 @@
    0
   ],
   [
-   "blk.12.loop_k_down.weight",
+   "blk.12.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -3244,7 +3229,7 @@
    0
   ],
   [
-   "blk.12.loop_k_forget.weight",
+   "blk.12.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -3252,7 +3237,7 @@
    0
   ],
   [
-   "blk.12.loop_k_gain.weight",
+   "blk.12.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -3260,7 +3245,7 @@
    0
   ],
   [
-   "blk.12.loop_mlp_down.weight",
+   "blk.12.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -3268,7 +3253,7 @@
    0
   ],
   [
-   "blk.12.loop_mlp_forget.weight",
+   "blk.12.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -3276,7 +3261,7 @@
    0
   ],
   [
-   "blk.12.loop_mlp_gain.weight",
+   "blk.12.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -3284,7 +3269,7 @@
    0
   ],
   [
-   "blk.12.loop_v_down.weight",
+   "blk.12.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -3292,7 +3277,7 @@
    0
   ],
   [
-   "blk.12.loop_v_forget.weight",
+   "blk.12.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -3300,7 +3285,7 @@
    0
   ],
   [
-   "blk.12.loop_v_gain.weight",
+   "blk.12.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -3495,7 +3480,7 @@
    0
   ],
   [
-   "blk.13.loop_attn_down.weight",
+   "blk.13.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -3503,7 +3488,7 @@
    0
   ],
   [
-   "blk.13.loop_attn_forget.weight",
+   "blk.13.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -3511,7 +3496,7 @@
    0
   ],
   [
-   "blk.13.loop_attn_gain.weight",
+   "blk.13.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -3519,7 +3504,7 @@
    0
   ],
   [
-   "blk.13.loop_k_down.weight",
+   "blk.13.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -3527,7 +3512,7 @@
    0
   ],
   [
-   "blk.13.loop_k_forget.weight",
+   "blk.13.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -3535,7 +3520,7 @@
    0
   ],
   [
-   "blk.13.loop_k_gain.weight",
+   "blk.13.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -3543,7 +3528,7 @@
    0
   ],
   [
-   "blk.13.loop_mlp_down.weight",
+   "blk.13.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -3551,7 +3536,7 @@
    0
   ],
   [
-   "blk.13.loop_mlp_forget.weight",
+   "blk.13.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -3559,7 +3544,7 @@
    0
   ],
   [
-   "blk.13.loop_mlp_gain.weight",
+   "blk.13.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -3567,7 +3552,7 @@
    0
   ],
   [
-   "blk.13.loop_v_down.weight",
+   "blk.13.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -3575,7 +3560,7 @@
    0
   ],
   [
-   "blk.13.loop_v_forget.weight",
+   "blk.13.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -3583,7 +3568,7 @@
    0
   ],
   [
-   "blk.13.loop_v_gain.weight",
+   "blk.13.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -3778,7 +3763,7 @@
    0
   ],
   [
-   "blk.14.loop_attn_down.weight",
+   "blk.14.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -3786,7 +3771,7 @@
    0
   ],
   [
-   "blk.14.loop_attn_forget.weight",
+   "blk.14.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -3794,7 +3779,7 @@
    0
   ],
   [
-   "blk.14.loop_attn_gain.weight",
+   "blk.14.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -3802,7 +3787,7 @@
    0
   ],
   [
-   "blk.14.loop_k_down.weight",
+   "blk.14.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -3810,7 +3795,7 @@
    0
   ],
   [
-   "blk.14.loop_k_forget.weight",
+   "blk.14.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -3818,7 +3803,7 @@
    0
   ],
   [
-   "blk.14.loop_k_gain.weight",
+   "blk.14.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -3826,7 +3811,7 @@
    0
   ],
   [
-   "blk.14.loop_mlp_down.weight",
+   "blk.14.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -3834,7 +3819,7 @@
    0
   ],
   [
-   "blk.14.loop_mlp_forget.weight",
+   "blk.14.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -3842,7 +3827,7 @@
    0
   ],
   [
-   "blk.14.loop_mlp_gain.weight",
+   "blk.14.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -3850,7 +3835,7 @@
    0
   ],
   [
-   "blk.14.loop_v_down.weight",
+   "blk.14.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -3858,7 +3843,7 @@
    0
   ],
   [
-   "blk.14.loop_v_forget.weight",
+   "blk.14.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -3866,7 +3851,7 @@
    0
   ],
   [
-   "blk.14.loop_v_gain.weight",
+   "blk.14.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -4061,7 +4046,7 @@
    0
   ],
   [
-   "blk.15.loop_attn_down.weight",
+   "blk.15.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -4069,7 +4054,7 @@
    0
   ],
   [
-   "blk.15.loop_attn_forget.weight",
+   "blk.15.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -4077,7 +4062,7 @@
    0
   ],
   [
-   "blk.15.loop_attn_gain.weight",
+   "blk.15.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -4085,7 +4070,7 @@
    0
   ],
   [
-   "blk.15.loop_k_down.weight",
+   "blk.15.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -4093,7 +4078,7 @@
    0
   ],
   [
-   "blk.15.loop_k_forget.weight",
+   "blk.15.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -4101,7 +4086,7 @@
    0
   ],
   [
-   "blk.15.loop_k_gain.weight",
+   "blk.15.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -4109,7 +4094,7 @@
    0
   ],
   [
-   "blk.15.loop_mlp_down.weight",
+   "blk.15.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -4117,7 +4102,7 @@
    0
   ],
   [
-   "blk.15.loop_mlp_forget.weight",
+   "blk.15.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -4125,7 +4110,7 @@
    0
   ],
   [
-   "blk.15.loop_mlp_gain.weight",
+   "blk.15.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -4133,7 +4118,7 @@
    0
   ],
   [
-   "blk.15.loop_v_down.weight",
+   "blk.15.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -4141,7 +4126,7 @@
    0
   ],
   [
-   "blk.15.loop_v_forget.weight",
+   "blk.15.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -4149,7 +4134,7 @@
    0
   ],
   [
-   "blk.15.loop_v_gain.weight",
+   "blk.15.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -4344,7 +4329,7 @@
    0
   ],
   [
-   "blk.16.loop_attn_down.weight",
+   "blk.16.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -4352,7 +4337,7 @@
    0
   ],
   [
-   "blk.16.loop_attn_forget.weight",
+   "blk.16.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -4360,7 +4345,7 @@
    0
   ],
   [
-   "blk.16.loop_attn_gain.weight",
+   "blk.16.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -4368,7 +4353,7 @@
    0
   ],
   [
-   "blk.16.loop_k_down.weight",
+   "blk.16.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -4376,7 +4361,7 @@
    0
   ],
   [
-   "blk.16.loop_k_forget.weight",
+   "blk.16.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -4384,7 +4369,7 @@
    0
   ],
   [
-   "blk.16.loop_k_gain.weight",
+   "blk.16.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -4392,7 +4377,7 @@
    0
   ],
   [
-   "blk.16.loop_mlp_down.weight",
+   "blk.16.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -4400,7 +4385,7 @@
    0
   ],
   [
-   "blk.16.loop_mlp_forget.weight",
+   "blk.16.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -4408,7 +4393,7 @@
    0
   ],
   [
-   "blk.16.loop_mlp_gain.weight",
+   "blk.16.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -4416,7 +4401,7 @@
    0
   ],
   [
-   "blk.16.loop_v_down.weight",
+   "blk.16.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -4424,7 +4409,7 @@
    0
   ],
   [
-   "blk.16.loop_v_forget.weight",
+   "blk.16.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -4432,7 +4417,7 @@
    0
   ],
   [
-   "blk.16.loop_v_gain.weight",
+   "blk.16.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -4658,7 +4643,7 @@
    0
   ],
   [
-   "blk.17.loop_attn_down.weight",
+   "blk.17.loop_q_ctrl_down.weight",
    [
     4608,
     64
@@ -4666,7 +4651,7 @@
    0
   ],
   [
-   "blk.17.loop_attn_forget.weight",
+   "blk.17.loop_q_ctrl_forget.weight",
    [
     64,
     2304
@@ -4674,7 +4659,7 @@
    0
   ],
   [
-   "blk.17.loop_attn_gain.weight",
+   "blk.17.loop_q_ctrl_gain.weight",
    [
     64,
     2304
@@ -4682,7 +4667,7 @@
    0
   ],
   [
-   "blk.17.loop_k_down.weight",
+   "blk.17.loop_k_ctrl_down.weight",
    [
     4608,
     64
@@ -4690,7 +4675,7 @@
    0
   ],
   [
-   "blk.17.loop_k_forget.weight",
+   "blk.17.loop_k_ctrl_forget.weight",
    [
     64,
     2304
@@ -4698,7 +4683,7 @@
    0
   ],
   [
-   "blk.17.loop_k_gain.weight",
+   "blk.17.loop_k_ctrl_gain.weight",
    [
     64,
     2304
@@ -4706,7 +4691,7 @@
    0
   ],
   [
-   "blk.17.loop_mlp_down.weight",
+   "blk.17.loop_ffn_ctrl_down.weight",
    [
     4608,
     64
@@ -4714,7 +4699,7 @@
    0
   ],
   [
-   "blk.17.loop_mlp_forget.weight",
+   "blk.17.loop_ffn_ctrl_forget.weight",
    [
     64,
     2304
@@ -4722,7 +4707,7 @@
    0
   ],
   [
-   "blk.17.loop_mlp_gain.weight",
+   "blk.17.loop_ffn_ctrl_gain.weight",
    [
     64,
     2304
@@ -4730,7 +4715,7 @@
    0
   ],
   [
-   "blk.17.loop_v_down.weight",
+   "blk.17.loop_v_ctrl_down.weight",
    [
     4608,
     64
@@ -4738,7 +4723,7 @@
    0
   ],
   [
-   "blk.17.loop_v_forget.weight",
+   "blk.17.loop_v_ctrl_forget.weight",
    [
     64,
     2304
@@ -4746,7 +4731,7 @@
    0
   ],
   [
-   "blk.17.loop_v_gain.weight",
+   "blk.17.loop_v_ctrl_gain.weight",
    [
     64,
     2304
@@ -5847,6 +5832,102 @@
    "blk.23.ffn_res_query.weight",
    [
     2304
+   ],
+   0
+  ],
+  [
+   "blk.6.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.7.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.8.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.9.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.10.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.11.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.12.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.13.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.14.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.15.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.16.loop_msg_query.weight",
+   [
+    2304,
+    4
+   ],
+   0
+  ],
+  [
+   "blk.17.loop_msg_query.weight",
+   [
+    2304,
+    4
    ],
    0
   ]

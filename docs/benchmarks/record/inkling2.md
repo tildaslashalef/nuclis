@@ -135,3 +135,32 @@ below alternates its builds.
   matvec; F16 cache chunked 0.170 / 9.7e-3, Q8_0 0.262 / 1.2e-2; eight
   verify rows within 2.6e-3 / 1.9e-4 of stepping; the greedy token held in
   each.
+
+## The pinned main file (2026-11-27)
+
+The same machine; nuclis at `1d63ba0` plus this change; the index's new
+pin, `main` at `8078d149…` (`inkling2_loop`, SHA-256 `e6427665…`).
+
+- **The same model.** Every CPU trace pinned from the earlier file
+  (`inkling2-trace-cpu`, `-f16`, `-q8_0`, 385 files each) matches at max
+  abs 0; the Metal traces read 7.6e-5, 2.96e-3, and 0.140, as before.
+- **Perplexity**, `nuclis eval --backend metal`, F16 cache, WikiText-2's
+  `wiki.test.raw`, eight windows of 512: 7.6582 ± 0.43, every window's
+  running value equal to the earlier file's to four places (window 1
+  5.2454). The CPU's first window, F32 cache, is 0.137 % below
+  (395 s); rounded to F16 (`--kv f16`), 0.102 %. The rest is likely the
+  chunked prefill's half-precision expert tiles (§ The chunked plan), not
+  measured apart.
+- **Routing**, `nuclis bench --expert-counts`, Metal, the first 1,024,
+  8,192, and 32,768 tokens of `wiki.test.raw` (raw), context 34,816.
+  Mean distinct experts over R consecutive prompt rows:
+
+  | Prompt | R = 2 | 4 | 8 | 9 | 16 | 1,024-row chunk |
+  | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+  | 1,024 | 12.8 | 20.2 | 30.7 | 32.8 | 44.2 | 109.5 |
+  | 8,192 | 12.5 | 19.5 | 29.4 | 31.3 | 42.1 | 110.8 |
+  | 32,768 | 12.6 | 19.6 | 29.6 | 31.6 | 42.5 | 110.1 |
+
+  A chunk's lists hold about 74 rows each, 45 to 48 % of them under 32.
+  The next token shares 3.2 to 3.5 of its 8 experts with the prompt's
+  last, and 2.8 to 4.2 in decode.

@@ -2,30 +2,28 @@
 # Inkling 2 Mini
 
 Thinking Machines' looped mixture of experts (`general.architecture =
-inkling2`): 24 stored blocks run as 48 layer applications, 128 experts
+inkling2_loop`): 24 stored blocks run as 48 layer applications, 128 experts
 (top 8) per block, sliding and global attention without RoPE, a learned
 relative-position bias, short convolutions, and attention over the depth
 in place of a plain residual stream. The file is Unsloth's
-`unsloth/Inkling-2-Mini-GGUF` `Inkling-2-Mini-UD-Q4_K_XL.gguf` (17.6 GB),
-with a [vision projector](../engine/vision.md#inkling-2s-projector) (`mmproj-F16.gguf`) and a
-DSpark drafter (`dspark-Inkling-2-Mini-Q8_0.gguf`, architecture
-`dflash`); commits and digests in
-[the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11).
-The header's facts are pinned in
-`inference/src/models/fixtures/inkling2-q4_k_xl.json`. The CPU reference
-([inkling2_runtime.zig](../../inference/src/models/inkling2_runtime.zig))
+`Inkling-2-Mini-UD-Q4_K_XL.gguf` (17.6 GB), with a [vision
+projector](../engine/vision.md#inkling-2s-projector) (`mmproj-F16.gguf`)
+and a DSpark drafter (architecture `dflash`); commits and digests in
+[the record](../benchmarks/record/catalogue.md#pinned-commits-and-digests-2026-09-11),
+header facts in `inference/src/models/fixtures/inkling2-q4_k_xl.json`. The
+CPU reference ([inkling2_runtime.zig](../../inference/src/models/inkling2_runtime.zig))
 and the Metal plan ([§ Metal](#metal)) run it.
 
 ## Architecture
 
-From the file's 35 `inkling2.*` keys:
+From the file's 36 `inkling2_loop.*` keys (per-block arrays are 24 long, one per stored block):
 
 | Fact | Value |
 | --- | --- |
 | Width | 2,304; every norm RMS with ε 1e-6 |
 | Attention | 24 query over 8 KV heads of 128 on every application; no RoPE (`rope.dimension_count` 0) |
 | Layout | 48 applications, sliding window 1,024; global at `il mod 6 = 5` (5, 11, …, 47) |
-| Loop | `num_loops` 3, core stored blocks 6–17, controller rank 64 |
+| Loop | `loop.count` 3 over stored `loop.start` 6 to `loop.end` 18 (exclusive), controller rank 64; `loop.varying` false (every pass the same weights) |
 | Application → stored | `il < 6` → `il`; `6 ≤ il < 42` → `6 + (il − 6) mod 12`; `il ≥ 42` → `il − 24`; the global applications land on stored 5, 11, 17, 23 |
 | Depth mix | blocks of `attn_res.block_size` 6 |
 | Relative bias | 16 coefficients a head, extent 1,024 on both kinds; clip 8 |
@@ -82,7 +80,7 @@ index of application `il`.
 5. **Residuals.** At a block start (`ip mod 6 = 0`) the layer's input
    `cur` is appended to `blocks` and `cur ← a`; otherwise `cur ← cur + a`.
    The FFN input is `f = rms(mix(blocks ∪ {cur}, ffn_res_query)) ·
-   ffn_norm`, with the mlp controller applied to the mix before the norm
+   ffn_norm`, with the ffn controller applied to the mix before the norm
    in passes 2 and 3. Then `cur ← cur + convffn(moe(f))` with
    `ffn_post_conv`.
 6. **The loop.** Passes run the core (stored 6–17) three times. Before
@@ -91,9 +89,9 @@ index of application `il`.
    at stored 12), and `bank_last` its final `cur`; then `blocks` and
    `cur` return to the prelude's (as they were entering stored 6). For
    core block `j = ip − 6` the messages are `mix(bank ∪ {bank_last},
-   loop_res_query rows 2j, 2j+1)` → (attn, mlp) and the same with
-   `loop_kv_res_query` → (k, v). The controller of module `m` (attn, k,
-   v, mlp): `h = Wdown [rms(x); rms(msg)]` (4,608 → 64), `x ← (1 −
+   q)` for each row `q` of its `loop_msg_query` [2,304 × 4], one per
+   module in the order (q, k, v, ffn). The controller `loop_m_ctrl_*` of
+   module `m`: `h = Wdown [rms(x); rms(msg)]` (4,608 → 64), `x ← (1 −
    tanh(Wforget h)) ⊙ x + tanh(Wgain h) ⊙ msg`.
 7. **Experts.** Router logits `z = W_gate_inp f` in F32; select the top 8
    of `σ(z) + exp_probs_b`; weights `σ(z_e)` of the chosen, divided by
@@ -126,13 +124,13 @@ the window's columns; `relative_extent` is the same 1,024.
 
 ## Files and encodings
 
-734 tensors, none Q4_K despite the name. By encoding:
+744 tensors, none Q4_K despite the name. By encoding:
 
 | Encoding | Tensors | What |
 | --- | ---: | --- |
-| F32 | 508 | norms, router, depth and loop queries, conv taps, relative tables and clips, loop controllers, expert scales |
+| F32 | 518 | norms, router, depth queries, the core's loop queries (`loop_msg_query`), conv taps, relative tables and clips, loop controllers, expert scales |
 | Q8_0 | 154 | every projection, `token_embd`, `output`, and the experts of stored 20–23 |
-| NVFP4 (ggml id 40) | 40 | the experts of stored 0–19, each with a per-expert F32 `ffn_{gate_up,down}_exps.scale [128]` |
+| NVFP4 (type id 40) | 40 | the experts of stored 0–19, each with a per-expert F32 `ffn_{gate_up,down}_exps.scale [128]` |
 | BF16 | 32 | `attn_sink_proj`, `attn_{k,v}_conv_proj` |
 
 - **NVFP4 block**: 64 values in 36 bytes, four UE4M3 scales then 32 bytes
@@ -186,12 +184,13 @@ F32 trace 7.6e-5 / 8.7e-7 from the reference's; a chunk on the F32 tiles
 1.8e-5 from stepping. F16 and Q8_0 caches meet the reference rounded alike
 (`--kv` on the CPU), 3.0e-3 / 8.8e-5 and 0.14 / 2.5e-3; `make test-tiny` alone holds the window.
 
-## What is verified
+## Numbers
 
 The CPU reference agrees with the format's definition to 5 % relative RMS
-at every application of an 8-token prompt, the largest errors where the
-router's eighth expert differs at a near tie
-([record](../benchmarks/record/inkling2.md)); its own trace is pinned.
+at every application of an 8-token prompt; its own trace is pinned.
+WikiText-2, 8 windows of 512, Metal, F16 cache: perplexity 7.6582 ± 0.43,
+the CPU's first window 0.137 % below. 16 rows route to 42–44 of the 128
+experts at 1K, 8K, and 32K tokens ([record](../benchmarks/record/inkling2.md#the-pinned-main-file-2026-11-27)).
 
 <!-- gen:gates-for:inkling2 -->
 | Gate | Tier | Model | Evidence |
@@ -204,10 +203,11 @@ router's eighth expert differs at a near tie
 | `inkling2-trace-f16` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-q8_0` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-generation-metal` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
+| `inkling2-perplexity` | `verify` | inkling2 | [inkling2.md § numbers](inkling2.md#numbers) |
 | `inkling2-vision-metal` | `verify` | inkling2 | [vision.md § inkling-2s-projector](../engine/vision.md#inkling-2s-projector) |
 | `inkling2-vision-cpu` | `verify-cpu` | inkling2 | [vision.md § inkling-2s-projector](../engine/vision.md#inkling-2s-projector) |
 <!-- /gen -->
 
 ## Known limits
 
-- Only the pinned commit binds; `main` (2026-11-26) re-uploads it as `inkling2_loop`.
+- Only `inkling2_loop` binds; the Hub's first encoding (`inkling2`, 48 applications in the header) is refused.
