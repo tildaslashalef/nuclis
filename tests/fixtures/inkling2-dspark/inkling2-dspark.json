@@ -1,0 +1,13 @@
+{
+  "reference": "nuclis CPU reference",
+  "tool": "zig build test-generation -- <Inkling 2 Mini UD-Q4_K_XL> --flash-trace DIR --draft-model <dspark>",
+  "model": "Inkling-2-Mini-UD-Q4_K_XL.gguf (unsloth/Inkling-2-Mini-GGUF at 8078d149, sha256 e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3)",
+  "companion": "unsloth/Inkling-2-Mini-GGUF dspark-Inkling-2-Mini-Q8_0.gguf at 8078d149 (sha256 3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0)",
+  "prompt": "the inkling2-quick-brown prompt's ids",
+  "tokens": [371, 157021, 161319, 220, 32329, 160581, 82, 150053],
+  "files": {
+    "p0-h.f32 .. p7-h.f32": "the block's final normed hidden, rows 0 (the anchor) to 7, after the prompt's commit rows were committed",
+    "greedy.txt": "the anchor (the prompt's greedy token), then the Markov chain's 7 greedy drafts at p_min 0"
+  },
+  "note": "The CPU reference as fixture: the DSpark drafter has no other oracle. Recorded 2026-11-27; a Metal drafter is to be checked against it."
+}

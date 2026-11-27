@@ -2,7 +2,7 @@
 # Speculative decoding: recovery contract, draft sources, measurements
 
 The reference document of speculative decoding: the contract a draft
-source meets, how the session recovers a partly accepted batch, the four
+source meets, how the session recovers a partly accepted batch, the five
 draft sources, the verify batch and the loop, and the switch. Its
 requirements are in the [spec](../spec.md#56-speculative-decoding); how
 each piece was built and measured is in
@@ -22,6 +22,7 @@ follow the record
 | Gemma 4 26B-A4B (archived) | on at draft 4 | its assistant head |
 | Gemma 4 12B QAT (archived) | on at draft 5 | its assistant head |
 | Muse Glimmer | on at draft 6 | its DFlash drafter |
+| Inkling 2 Mini | off (CPU reference only) | its DSpark drafter |
 
 ## The draft contract
 
@@ -204,6 +205,37 @@ in `qwen35_metal.zig`) the convolution is `nu_dflash_conv`, the drafter's
 Q8_0 projections take `matmul`'s Q8_0 tiles as any family's do, and the
 selector runs on the host over a device top-16 per row.
 
+### Inkling 2's DSpark drafter
+
+`inkling-2-mini`'s draft variant `dspark` (`dspark.zig`, architecture
+`dflash`; `markov_w1` and `mask_embd` tell it from Muse's and Qwen's) binds
+through `inkling2.attachDraft` when its taps `[5, 23, 41, 48]` fit.
+
+- **Block.** `[anchor, mask × 7]` at `P … P + 7`: the anchor's target
+  embedding through `token_embd_norm`, then `mask_embd`'s rows as stored.
+  Three blocks of 24 query and 8 KV heads of 128, q/k norms, NeoX RoPE θ 1e6
+  over the whole head, non-causal inside the block; blocks 0 and 2 slide at
+  1,025 counted from the anchor for every row (the anchor and the 1,024
+  committed rows before it), block 1 every one; 8 rows for any `k ≤ 7`.
+- **Commit.** A row is `cur` entering applications 5, 23 and 41 (after a
+  loop pass's reset) and the head's normed input: 9,216 floats. Each block
+  keys `k_ctx_norm(attn_k_ctx(c))` with RoPE and values `attn_v_ctx(c)`, for
+  `c = ctx_norm(Σ ctx_mix[i] · row_i)`; `f_rnn = markov_ctx_norm(Σ
+  markov_ctx_mix[i] · row_i)` of the last committed row is `carried`, tagged
+  with its position. A block whose previous row was not committed drafts
+  nothing.
+- **The Markov chain.** Draft `i` (rows 1 … 7) starts from the target's
+  head on row `i`'s hidden, uncapped; `joint_proj · [state; markov_w1[prev];
+  hidden_i; f_rnn]` gives a gate, a candidate and the Markov feature
+  (`state ← cand + σ(g) · (state − cand)`), `markov_w2` its bias over the
+  full vocabulary, and `30 · tanh((base + bias) / 30)` the draft's logits;
+  `prev` is the anchor, then the draft before.
+
+The CPU reference is `dspark_runtime.zig`: three full-capacity caches after
+the target's 96 (a block writes 8 rows past a window's compaction); recovery
+by checkpoint, rewind and replay (the convolution history is a pure shift
+register of its inputs). No Metal drafter yet; the entry is off ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-the-cpu-2026-11-27)).
+
 ## The verify batch
 
 `Model.verify(tokens, vocabulary, output, hidden, observer)` runs the batch
@@ -336,6 +368,8 @@ and the external evidence surveyed are in
 | `qwen38-dflash2-trace-{metal,cpu}` | DFlash2 on Metal against the CPU rows in `tests/fixtures/qwen38-dflash2` |
 | `qwen38-dflash2-speculative-{metal,cpu}` | the same loop checks with DFlash2 |
 | `gemma4-e4b-draft-trace-{metal,cpu}` | the E4B head's rows (`inference/src/models/fixtures/gemma4-mtp-e4b/`) and every `verify` row against the stepped logits |
+| `inkling2-dspark-trace-cpu` | the DSpark block's rows and greedy chain against `tests/fixtures/inkling2-dspark` |
+| `inkling2-dspark-speculative-cpu` | the loop checks with DSpark on the CPU reference |
 
 `generation-check --metal` also runs `verifyTopKCheck`, which requires the
 `topk` readback's decisions to equal `select` on the `rows`-mode row, and

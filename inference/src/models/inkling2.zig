@@ -18,6 +18,7 @@ const gguf = @import("../formats/gguf.zig");
 const models = @import("root.zig");
 const session = @import("../runtime/session.zig");
 const weights = @import("../runtime/weights.zig");
+const dspark = @import("dspark.zig");
 const tiny_models = @import("build_options").tiny_models;
 const Tensor = gguf.Tensor;
 
@@ -188,6 +189,8 @@ pub const Binding = struct {
     output_norm: *const Tensor,
     output_residual_query: *const Tensor,
     blocks: [stored_blocks]Block,
+    /// The DSpark drafter from a companion file (`attachDraft`), or none.
+    dspark: ?dspark.Binding = null,
     summary: Summary,
 };
 
@@ -218,7 +221,28 @@ pub const family = struct {
     pub const bind = @import("inkling2.zig").bind;
     pub const Runtime = @import("inkling2.zig").Runtime;
     pub const Plan = @import("inkling2.zig").Plan;
+    pub const attachDraft = @import("inkling2.zig").attachDraft;
 };
+
+/// `attachDraft` adds the companion's mismatch, the typed error `Engine.open`
+/// surfaces.
+pub const DraftError = Error || error{DraftSourceMismatch};
+
+/// Binds a companion draft source onto `target` by content and reports that
+/// it was taken: only a DSpark drafter (`dflash` with its Markov head),
+/// whose context taps fit this target's applications and width; a DFlash
+/// or DFlash2 file, or any other, is `DraftSourceMismatch`.
+pub fn attachDraft(alloc: std.mem.Allocator, doc: *const gguf.Document, view: weights.View, target_view: weights.View, target: *Binding, force: bool) DraftError!bool {
+    _ = target_view;
+    _ = force;
+    if (!dspark.isDspark(doc)) return error.DraftSourceMismatch;
+    if (dspark.embedding != embedding or dspark.padded_vocabulary != padded_vocabulary or !dspark.fitsTarget(block_count)) return error.DraftSourceMismatch;
+    target.dspark = dspark.bind(alloc, doc, view) catch |err| switch (err) {
+        error.UnsupportedArchitecture, error.UnsupportedConfiguration, error.MissingMetadata, error.InvalidMetadata => return error.DraftSourceMismatch,
+        else => |e| return e,
+    };
+    return true;
+}
 
 pub const Runtime = @import("inkling2_runtime.zig").Runtime;
 
@@ -459,6 +483,7 @@ pub fn bind(alloc: std.mem.Allocator, doc: *const gguf.Document) Error!Binding {
     result.output_residual_query = try binder.take("output_res_query.weight", &.{embedding}, .f32);
     for (&result.blocks, 0..) |*block, index| block.* = try binder.block(index);
     if (binder.remaining.count() != 0) return error.UnexpectedTensor;
+    result.dspark = null;
     result.summary = .{
         .profile = profile,
         .decoder_layers = block_count,
@@ -669,4 +694,23 @@ test "binding survives allocation failure without leaks" {
             _ = try bind(alloc, d);
         }
     }.check, .{&doc});
+}
+
+test "attachDraft takes the DSpark drafter by content and refuses DFlash and DFlash2 files" {
+    var doc = try inventoryDocument(std.testing.allocator);
+    defer doc.deinit();
+    var target = try bind(std.testing.allocator, &doc);
+    const view: weights.View = .{ .file = &.{}, .data_offset = 0 };
+    var drafter = try dspark.inventoryDocument(std.testing.allocator);
+    defer drafter.deinit();
+    try std.testing.expect(try attachDraft(std.testing.allocator, &drafter, view, view, &target, false));
+    try std.testing.expectEqual(@as(u32, 58), target.dspark.?.summary.text_tensors);
+    var qwen = try @import("dflash2.zig").inventoryDocument(std.testing.allocator);
+    defer qwen.deinit();
+    try std.testing.expectError(error.DraftSourceMismatch, attachDraft(std.testing.allocator, &qwen, view, view, &target, false));
+    var muse = try @import("dflash.zig").inventoryDocument(std.testing.allocator);
+    defer muse.deinit();
+    try std.testing.expectError(error.DraftSourceMismatch, attachDraft(std.testing.allocator, &muse, view, view, &target, false));
+    // The target's own file is no drafter.
+    try std.testing.expectError(error.DraftSourceMismatch, attachDraft(std.testing.allocator, &doc, view, view, &target, false));
 }

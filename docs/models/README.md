@@ -375,10 +375,10 @@ verify-cpu` for the new CPU reference.
 
 ## Draft sources and experts
 
-A model's drafter is its own bring-up: the draft contract and the four
+A model's drafter is its own bring-up: the draft contract and the five
 sources nuclis has (Qwen3.8's prediction block in the target's file,
-Gemma 4's assistant head in a companion file, the DFlash and DFlash2
-drafters) are in
+Gemma 4's assistant head in a companion file, the DFlash, DFlash2 and
+DSpark drafters) are in
 [speculative-decoding.md § Draft sources](../engine/speculative-decoding.md#draft-sources).
 A new source gets CPU draft-row fixtures (`test-generation -- <file>
 --draft-trace DIR`), a `<family>-draft-trace-metal` gate against them, and

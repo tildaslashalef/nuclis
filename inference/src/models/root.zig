@@ -29,6 +29,9 @@ pub const inkling2_runtime = @import("inkling2_runtime.zig");
 pub const dflash = @import("dflash.zig");
 pub const dflash2 = @import("dflash2.zig");
 pub const dflash2_runtime = @import("dflash2_runtime.zig");
+/// Inkling 2 Mini's DSpark draft companion (bound by `inkling2.attachDraft`).
+pub const dspark = @import("dspark.zig");
+pub const dspark_runtime = @import("dspark_runtime.zig");
 pub const inventory = @import("inventory.zig");
 /// Generated random-weight models: test support for the `tiny_models` build.
 pub const tiny = @import("tiny.zig");
@@ -186,4 +189,6 @@ test {
     _ = dflash;
     _ = dflash2;
     _ = dflash2_runtime;
+    _ = dspark;
+    _ = dspark_runtime;
 }

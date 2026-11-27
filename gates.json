@@ -69,6 +69,10 @@
   },
   "inkling2": {
    "artifact": "inkling-2-mini"
+  },
+  "inkling2_dspark": {
+   "artifact": "inkling-2-mini",
+   "file": "draft:dspark"
   }
  },
  "data": {
@@ -324,7 +328,9 @@
    "inference/src/tokenizer/o200k.zig",
    "inference/src/tokenizer/case_table.zig",
    "inference/src/models/inkling2*.zig",
+   "inference/src/models/dspark*.zig",
    "inference/src/models/fixtures/inkling2-*.json",
+   "inference/src/models/fixtures/dspark-*.json",
    "tests/fixtures/inkling2-*/**",
    "inference/src/vision/inkling2*.zig",
    "inference/src/vision/fixtures/inkling2*/**",
@@ -2650,6 +2656,55 @@
     "max_relative_rms": 0.0001
    },
    "evidence": "docs/models/inkling2.md"
+  },
+  {
+   "name": "inkling2-dspark-trace-cpu",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "mtp": "inkling2_dspark",
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--flash-trace",
+    "{trace}",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "trace",
+    "reference": "tests/fixtures/inkling2-dspark",
+    "positions": 8,
+    "embedding": 2304,
+    "draft": true
+   },
+   "bounds": {
+    "max_absolute": 0.002,
+    "max_relative_rms": 0.0001
+   },
+   "evidence": "docs/engine/speculative-decoding.md#inkling-2s-dspark-drafter"
+  },
+  {
+   "name": "inkling2-dspark-speculative-cpu",
+   "family": "inkling2",
+   "tier": "verify-cpu",
+   "model": "inkling2",
+   "mtp": "inkling2_dspark",
+   "command": [
+    "{zig-cpu}",
+    "test-generation",
+    "--",
+    "{model}",
+    "--speculative-check",
+    "--draft-model",
+    "{mtp}"
+   ],
+   "comparator": {
+    "kind": "exit"
+   },
+   "evidence": "docs/engine/speculative-decoding.md#inkling-2s-dspark-drafter"
   },
   {
    "name": "inkling2-trace-cpu-f16",

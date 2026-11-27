@@ -902,7 +902,7 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try expectTexts(a, &.{ "model", "rm", "" }, pulled, &.{"laya"});
     try expectTexts(a, &.{ "model", "rm", "laya", "--" }, pulled, &.{ "--with", "--all", "--json" });
     try expectTexts(a, &.{ "model", "rm", "laya", "--with", "m" }, pulled, &.{"mmproj"});
-    try expectTexts(a, &.{ "model", "pull", "qwen3.8-27b", "--with", "d" }, pulled, &.{ "draft", "draft=mtp", "draft=dflash2" });
+    try expectTexts(a, &.{ "model", "pull", "qwen3.8-27b", "--with", "d" }, pulled, &.{ "draft", "draft=mtp", "draft=dflash2", "draft=dspark" });
     try expectTexts(a, &.{ "agent", "--resume", "" }, state, &.{ "abc123", "def456" });
     try expectTexts(a, &.{ "agent", "export", "a" }, state, &.{"abc123"});
     try testing.expect(try answerFor(a, &.{ "agent", "export", "abc123", "" }, state) == .file);
@@ -914,7 +914,7 @@ test "paths go to the shell, and the user's state fills models, sessions, and ke
     try expectTexts(a, &.{ "config", "set", "agent.think", "h" }, state, &.{"high"});
     try expectTexts(a, &.{ "config", "set", "engine.model", "m" }, state, &.{"mine"});
     try expectTexts(a, &.{ "config", "set", "models.mine.profile", "gemma4_" }, state, &.{"gemma4_e"});
-    try expectTexts(a, &.{ "model", "pull", "x", "--with", "mmproj," }, state, &.{ "mmproj,draft", "mmproj,draft=mtp", "mmproj,draft=dflash2", "mmproj,imatrix" });
+    try expectTexts(a, &.{ "model", "pull", "x", "--with", "mmproj," }, state, &.{ "mmproj,draft", "mmproj,draft=mtp", "mmproj,draft=dflash2", "mmproj,draft=dspark", "mmproj,imatrix" });
     // `speak --voice` offers each speaker once and the saved voices; `voice rm` the saved alone.
     const saved: State = .{ .voices = &.{ .{ .text = "anna" }, .{ .text = "sam" } } };
     try expectTexts(a, &.{ "speak", "--voice", "s" }, saved, &.{ "serena", "sohee", "sam" });

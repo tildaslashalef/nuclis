@@ -3665,7 +3665,7 @@ test "pull --catalogue takes the defaults, --extra the extras not archived, and 
     try std.testing.expectEqual(files[0].size, after[0].present);
     var out: std.Io.Writer.Allocating = .init(arena);
     try renderCataloguePlan(arena, &out.writer, after, .plain);
-    try std.testing.expect(std.mem.startsWith(u8, out.written(), "◆ the catalogue · 9 entries, 17 files, 61.29 GB · "));
+    try std.testing.expectStringStartsWith(out.written(), "◆ the catalogue · 9 entries, 18 files, 61.80 GB · ");
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nqwen3.8-27b                 main mmproj dflash2  19.55 GB  ○ partly here\n") != null);
     try std.testing.expect(std.mem.indexOf(u8, out.written(), "\nlaya                        main                 842.6 MB  – to fetch\n") != null);
 }

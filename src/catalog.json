@@ -234,6 +234,18 @@
      "size": 639348160,
      "sha256": "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f",
      "verdict": null
+    },
+    {
+     "role": "draft",
+     "variant": "dspark",
+     "local": "unsloth/Inkling-2-Mini-GGUF/dspark-Inkling-2-Mini-Q8_0.gguf",
+     "size": 503889952,
+     "sha256": "3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0",
+     "verdict": {
+      "speculative": false,
+      "draft_length": 3,
+      "max_depth": null
+     }
     }
    ]
   },

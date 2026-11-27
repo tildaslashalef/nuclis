@@ -1,0 +1,509 @@
+{
+ "metadata": {
+  "general.architecture": "dflash",
+  "general.type": "model",
+  "general.sampling.temp": 1.0,
+  "general.name": "Src_B35740",
+  "general.size_label": "368M",
+  "dflash.block_count": 3,
+  "dflash.context_length": 1048576,
+  "dflash.embedding_length": 2304,
+  "dflash.feed_forward_length": 9216,
+  "dflash.attention.head_count": 24,
+  "dflash.attention.head_count_kv": 8,
+  "dflash.attention.key_length": 128,
+  "dflash.attention.value_length": 128,
+  "dflash.rope.dimension_count": 128,
+  "dflash.rope.freq_base": 1000000.0,
+  "dflash.attention.layer_norm_rms_epsilon": 9.999999974752427e-07,
+  "dflash.attention.sliding_window": 1025,
+  "dflash.attention.sliding_window_pattern": {
+   "count": 3,
+   "offset": 802,
+   "type": 7,
+   "values": [1,0,1]
+  },
+  "dflash.final_logit_softcapping": 30.0,
+  "dflash.block_size": 8,
+  "dflash.target_layers": {
+   "count": 4,
+   "offset": 928,
+   "type": 5,
+   "values": [5,23,41,48]
+  },
+  "dflash.sample_from_anchor": false,
+  "dflash.has_confidence_head": false,
+  "dflash.has_markov_context": true,
+  "tokenizer.ggml.model": "gpt2",
+  "tokenizer.ggml.pre": "inkling2",
+  "tokenizer.ggml.tokens": {
+   "count": 200058,
+   "offset": 1194,
+   "type": 8
+  },
+  "tokenizer.ggml.token_type": {
+   "count": 200058,
+   "offset": 3508017,
+   "type": 5
+  },
+  "tokenizer.ggml.merges": {
+   "count": 424413,
+   "offset": 4308294,
+   "type": 8
+  },
+  "tokenizer.ggml.eos_token_id": 200006,
+  "tokenizer.ggml.padding_token_id": 199999,
+  "tokenizer.ggml.eot_token_id": 200006,
+  "tokenizer.ggml.add_bos_token": false,
+  "tokenizer.ggml.add_eos_token": false,
+  "tokenizer.chat_template": {
+   "length": 6868,
+   "offset": 11923228,
+   "sha256": "53a9035f3255945704b5857657cfb00c1165090c0641c4f782a0cbf268cc16dc",
+   "head": "{%- set effort_map = {\"none\": 0.0, \"minimal\": 0.1, \"low\": 0.2, \""
+  },
+  "tokenizer.ggml.clean_spaces": false,
+  "tokenizer.ggml.mask_token_id": 0,
+  "general.quantization_version": 2,
+  "general.file_type": 7
+ },
+ "tensors": [
+  [
+   "joint_proj.bias",
+   [
+    768
+   ],
+   0
+  ],
+  [
+   "joint_proj.weight",
+   [
+    5120,
+    768
+   ],
+   30
+  ],
+  [
+   "markov_ctx_mix.weight",
+   [
+    4
+   ],
+   0
+  ],
+  [
+   "markov_ctx_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "markov_w1.weight",
+   [
+    256,
+    200058
+   ],
+   30
+  ],
+  [
+   "markov_w2.bias",
+   [
+    200058
+   ],
+   0
+  ],
+  [
+   "markov_w2.weight",
+   [
+    256,
+    200058
+   ],
+   30
+  ],
+  [
+   "mask_embd.weight",
+   [
+    2304,
+    7
+   ],
+   0
+  ],
+  [
+   "output_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "token_embd_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_k.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.0.attn_k_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.0.attn_k_ctx_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_k_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_output.weight",
+   [
+    3072,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.0.attn_q.weight",
+   [
+    2304,
+    3072
+   ],
+   8
+  ],
+  [
+   "blk.0.attn_q_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.0.attn_v.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.0.attn_v_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.0.ctx_mix.weight",
+   [
+    4
+   ],
+   0
+  ],
+  [
+   "blk.0.ctx_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.0.ffn_down.weight",
+   [
+    9216,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.0.ffn_gate.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ],
+  [
+   "blk.0.ffn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.0.ffn_up.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_k.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_k_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_k_ctx_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_k_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_output.weight",
+   [
+    3072,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_q.weight",
+   [
+    2304,
+    3072
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_q_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.1.attn_v.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.1.attn_v_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.1.ctx_mix.weight",
+   [
+    4
+   ],
+   0
+  ],
+  [
+   "blk.1.ctx_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.1.ffn_down.weight",
+   [
+    9216,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.1.ffn_gate.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ],
+  [
+   "blk.1.ffn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.1.ffn_up.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_k.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_k_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_k_ctx_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_k_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_output.weight",
+   [
+    3072,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_q.weight",
+   [
+    2304,
+    3072
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_q_norm.weight",
+   [
+    128
+   ],
+   0
+  ],
+  [
+   "blk.2.attn_v.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.2.attn_v_ctx.weight",
+   [
+    2304,
+    1024
+   ],
+   8
+  ],
+  [
+   "blk.2.ctx_mix.weight",
+   [
+    4
+   ],
+   0
+  ],
+  [
+   "blk.2.ctx_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.2.ffn_down.weight",
+   [
+    9216,
+    2304
+   ],
+   8
+  ],
+  [
+   "blk.2.ffn_gate.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ],
+  [
+   "blk.2.ffn_norm.weight",
+   [
+    2304
+   ],
+   0
+  ],
+  [
+   "blk.2.ffn_up.weight",
+   [
+    2304,
+    9216
+   ],
+   8
+  ]
+ ]
+}

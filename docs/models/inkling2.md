@@ -196,6 +196,8 @@ the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#ink
 | --- | --- | --- | --- |
 | `inkling2-vocabulary` | `verify` | inkling2 | [inkling2.md § prompt-profile](inkling2.md#prompt-profile) |
 | `inkling2-trace-cpu` | `verify-cpu` | inkling2 | [inkling2.md](inkling2.md) |
+| `inkling2-dspark-trace-cpu` | `verify-cpu` | inkling2 | [speculative-decoding.md § inkling-2s-dspark-drafter](../engine/speculative-decoding.md#inkling-2s-dspark-drafter) |
+| `inkling2-dspark-speculative-cpu` | `verify-cpu` | inkling2 | [speculative-decoding.md § inkling-2s-dspark-drafter](../engine/speculative-decoding.md#inkling-2s-dspark-drafter) |
 | `inkling2-trace-cpu-f16` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-cpu-q8_0` | `verify-cpu` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
 | `inkling2-trace-f32` | `verify` | inkling2 | [inkling2.md § metal](inkling2.md#metal) |
@@ -210,4 +212,4 @@ the agent's tasks 34 of 36 at medium ([record](../benchmarks/record/agent.md#ink
 ## Known limits
 
 - Only `inkling2_loop` binds; the Hub's first encoding (`inkling2`, 48 applications in the header) is refused.
-- The DSpark drafter is not run: its acceptance does not pay for a verify batch and the recurrent state's replay ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-priced-2026-11-27)).
+- The DSpark drafter ([speculative-decoding.md](../engine/speculative-decoding.md#inkling-2s-dspark-drafter)) runs on the CPU reference only and the entry does not draft ([record](../benchmarks/record/inkling2.md#the-dspark-drafter-on-the-cpu-2026-11-27)).

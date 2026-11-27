@@ -311,3 +311,90 @@ after, and so do seeds 1 and 2 at temperature 1.5 (one fallback) and 2
 reference path, match the readback runs. At temperature 2 decode is 21.99
 to 22.91 tokens/s after against 21.38 to 21.49 before: a fallback costs
 what the old path did.
+
+## The DSpark drafter on the CPU (2026-11-27)
+
+The same machine; nuclis at `870cec6` with the DSpark binding and CPU
+reference on top, `ReleaseFast`, CPU only. `zig build test-generation --
+<UD-Q4_K_XL> --draft-stats --draft-model <dspark> --stats-tokens 160`,
+seed 1: per kind the target decodes 167 tokens past the prompt, then at
+each of the first 160 positions the drafter, committed up to there, runs
+one block from the token taken there. Prose is the raw lighthouse
+paragraph (206 tokens); code and explanation are chat turns at the
+profile's medium effort (53 and 40 tokens), so their continuations open
+with the model's reasoning. Temperature 1 is the full-vocabulary softmax,
+no top-k or top-p.
+
+**E(k)**, the tokens a verify of k drafts keeps (1 + the expected
+accepted drafts); "draws" is the loop's rule, every emitted token a target
+draw against the greedy chain (spec § 5.6), estimated as the target's
+probability of each draft where the continuation matched the drafts before
+it; "p/q" is `min(1, p/q)` against a chain drawn from the drafter's own
+softmax (full vocabulary; the format's sampled drafting draws from its
+top 64), by the coupling along the continuation:
+
+| Kind | Rule | k=1 | 2 | 3 | 4 | 5 | 6 | 7 |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | ---: |
+| prose | greedy | 1.431 | 1.588 | 1.638 | 1.638 | 1.638 | 1.638 | 1.638 |
+| prose | T 1, draws | 1.293 | 1.374 | 1.388 | 1.390 | 1.390 | 1.390 | 1.390 |
+| prose | T 1, p/q | 1.439 | 1.596 | 1.632 | 1.639 | 1.640 | 1.640 | 1.640 |
+| code | greedy | 1.794 | 2.419 | 2.875 | 3.206 | 3.425 | 3.556 | 3.631 |
+| code | T 1, draws | 1.679 | 2.129 | 2.399 | 2.565 | 2.668 | 2.729 | 2.767 |
+| code | T 1, p/q | 1.768 | 2.296 | 2.615 | 2.806 | 2.930 | 3.002 | 3.048 |
+| explanation | greedy | 1.588 | 1.875 | 2.019 | 2.106 | 2.125 | 2.131 | 2.131 |
+| explanation | T 1, draws | 1.690 | 2.147 | 2.420 | 2.580 | 2.662 | 2.703 | 2.721 |
+| explanation | T 1, p/q | 1.750 | 2.217 | 2.484 | 2.633 | 2.711 | 2.747 | 2.761 |
+
+Acceptance by depth, given the drafts before were accepted, greedy: prose
+43, 36, 32 % then none past depth 3; code 79, 79, 73, 73, 66, 60, 57 %;
+explanation 59, 49, 50, 61, 21, 33, 0 %. By the greedy chain's top
+probability, accepted greedy / at temperature 1 (draws):
+
+| Top probability | prose | code | explanation |
+| --- | ---: | ---: | ---: |
+| ≥ 0.9 | 80 / 71 % | 91 / 90 % | 84 / 88 % |
+| 0.7–0.9 | 54 / 42 % | 60 / 64 % | 49 / 51 % |
+| 0.5–0.7 | 26 / 25 % | 46 / 36 % | 38 / 32 % |
+| < 0.5 | 17 / 15 % | 16 / 22 % | 23 / 13 % |
+
+**Base-256 containment.** The chain's capped argmax lay among the 256
+largest of its base logits (the target head on the drafter row, before
+the Markov bias) at 84.1, 84.0 and 71.2 % of positions greedy (prose,
+code, explanation) and 78.4, 82.3, 84.7 % at temperature 1; along the
+continuation the drafter's softmax put 22, 23 and 18 % of its mass outside
+those 256. The bias is not a reranking of the head's top: `markov_w2.bias`
+alone gives token 220 +5.8. A device chain cut to the base top-256 would
+change a sixth to over a quarter of the drafts, so the chain runs over
+the full vocabulary on Metal too.
+
+**Priced** with the costs above: decode 32.7 ms, a verify of R = k + 1
+rows 28.5 + 8.6 R ms (the batch table, 2 ≤ R ≤ 8), the head on R rows
++0.3 ms, the drafter's pass 9.5 ms (an estimate: the CPU reference takes
+0.73 to 0.93 s a block with its chain), recovery and commit 2.5 ms with a
+tape. Speedup `E · 32.7 / C`:
+
+| Kind | Rule | k=1 | 2 | 3 | 4 | 5 | 7 | Best |
+| --- | --- | ---: | ---: | ---: | ---: | ---: | ---: | --- |
+| prose | greedy | 0.81 | 0.78 | 0.71 | 0.64 | 0.58 | 0.49 | 0.81 at 1 |
+| prose | T 1, draws | 0.73 | 0.67 | 0.60 | 0.54 | 0.49 | 0.41 | 0.73 at 1 |
+| code | greedy | 1.01 | 1.19 | 1.25 | 1.25 | 1.21 | 1.08 | 1.25 at 3–4 |
+| code | T 1, draws | 0.95 | 1.05 | 1.04 | 1.00 | 0.94 | 0.83 | 1.05 at 2 |
+| code | T 1, p/q | 1.00 | 1.13 | 1.14 | 1.09 | 1.04 | 0.91 | 1.14 at 3 |
+| explanation | greedy | 0.90 | 0.92 | 0.88 | 0.82 | 0.75 | 0.64 | 0.92 at 2 |
+| explanation | T 1, draws | 0.95 | 1.05 | 1.05 | 1.01 | 0.94 | 0.81 | 1.05 at 2–3 |
+| explanation | T 1, p/q | 0.99 | 1.09 | 1.08 | 1.03 | 0.96 | 0.82 | 1.09 at 2 |
+
+Code pays at every rule from 2 drafts and best at 3 to 4; explanation at
+temperature 1 pays by 5 to 9 % at 2 to 3, greedy does not; raw prose
+never does. The profile samples at temperature 1, where the loop's rule
+reaches 1.04 to 1.05 at 3 drafts on the two chat kinds. So the work goes
+on to the Metal drafter, at 3 drafts, with its cost measured rather than
+estimated, and `min(1, p/q)` is worth 4 to 10 % over the loop's rule at
+the same length. The entry stays off until a Metal run pays.
+
+**Correctness.** The CPU loop with the drafter is greedy-identical to the
+plain loop through `engine.runLoop` (`inkling2-dspark-speculative-cpu`:
+5 of 6 drafts accepted over 12 tokens, the forced token, the budget, EOS
+after 65 tokens, cancellation, and the context limit, where a block that
+does not fit drafts nothing). The block's rows and greedy chain on the
+`inkling2-quick-brown` prompt are pinned in `tests/fixtures/inkling2-dspark`.

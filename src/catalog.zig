@@ -345,6 +345,9 @@ pub const artifacts = [_]Artifact{
         .files = &.{
             .{ .role = .main, .path = "Inkling-2-Mini-UD-Q4_K_XL.gguf", .size = 17_629_760_736, .sha256 = "e64276656f072e9b2197a61723667cbdb71da66a716ffd966e572c21088f3cd3" },
             .{ .role = .mmproj, .path = "mmproj-F16.gguf", .size = 639_348_160, .sha256 = "3bff75ffeb2d6e0371ba7bd42e30d26a7d98aea681fa44b03b5a20891cfa2c5f", .used_for = "image input" },
+            // Off: only the CPU reference drafts with it so far
+            // (docs/engine/speculative-decoding.md § Inkling 2's DSpark drafter).
+            .{ .role = .draft, .variant = "dspark", .path = "dspark-Inkling-2-Mini-Q8_0.gguf", .size = 503_889_952, .sha256 = "3da00cf7c31bbe5662b3c0d373ecf782d74d32ef43990acc158ce60c2add72e0", .used_for = "speculative decoding (a DSpark drafter)", .verdict = .{ .speculative = false, .draft_length = 3 } },
         },
     },
     // Meta's dense agentic model with its DFlash drafter.

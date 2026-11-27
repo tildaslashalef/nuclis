@@ -133,6 +133,7 @@ pub fn main(init: std.process.Init) !void {
     var logits_out: ?[]const u8 = null;
     var prefix_dir: ?[]const u8 = null;
     var path: ?[]const u8 = null;
+    var stats: SparkStatsOptions = .{};
     var i: usize = 1;
     while (i < args.len) : (i += 1) {
         const arg = args[i];
@@ -198,6 +199,23 @@ pub fn main(init: std.process.Init) !void {
             i += 1;
             if (i >= args.len) return error.ExpectedPrefixDirectory;
             prefix_dir = args[i];
+        } else if (std.mem.eql(u8, arg, "--stats-tokens")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedTokenCount;
+            stats.tokens = std.fmt.parseInt(usize, args[i], 10) catch return error.InvalidTokenCount;
+            if (stats.tokens == 0) return error.InvalidTokenCount;
+        } else if (std.mem.eql(u8, arg, "--stats-seed")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedSeed;
+            stats.seed = std.fmt.parseInt(u64, args[i], 10) catch return error.InvalidSeed;
+        } else if (std.mem.eql(u8, arg, "--stats-kind")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedStatsKind;
+            stats.kind = args[i];
+        } else if (std.mem.eql(u8, arg, "--stats-sampling")) {
+            i += 1;
+            if (i >= args.len) return error.ExpectedStatsSampling;
+            stats.sampling = std.meta.stringToEnum(SparkSampling, args[i]) orelse return error.UnknownStatsSampling;
         } else if (std.mem.eql(u8, arg, "--vision-profile")) {
             vision_profile = true;
         } else if (std.mem.eql(u8, arg, "--vision-oracle")) {
@@ -253,7 +271,13 @@ pub fn main(init: std.process.Init) !void {
                 try visionCompare(alloc, init.io, projector, image, vision_oracle, use_metal, null)
             else
                 try visionCheck(alloc, init.io, model_path, projector, use_metal)
-        else if (draft_trace != null or draft_stats or speculative_check) return error.DraftStatsUnsupported else try run(inkling2_spec, alloc, init.io, &mapped, use_metal),
+        else if (flash_trace) |dir|
+            try sparkTrace(alloc, init.io, &mapped, use_metal, dir, draft_model orelse return error.ExpectedDraftModel)
+        else if (draft_stats)
+            try sparkStats(alloc, init.io, &mapped, use_metal, draft_model orelse return error.ExpectedDraftModel, stats)
+        else if (speculative_check)
+            try speculativeLoop(alloc, init.io, model_path, use_metal, draft_model orelse return error.ExpectedDraftModel, prompt_profile)
+        else if (draft_trace != null) return error.DraftStatsUnsupported else try run(inkling2_spec, alloc, init.io, &mapped, use_metal),
     }
     // The ordinary run's engine-level addition, backend-independent like
     // `speculativeLoop`, so the Metal run covers it.
@@ -1311,8 +1335,10 @@ fn penaltyCheck(comptime spec: Spec, alloc: std.mem.Allocator, b: *inference.met
 fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8, use_metal: bool, draft_model: ?[]const u8, prompt_profile: ?inference.profiles.Profile) !void {
     const engine = inference.engine;
     const generated = 12;
-    const max_limit = 24;
-    const capacity = 64;
+    // The EOS run's budget: Inkling 2 reasons for about 45 tokens before
+    // its reply even at effort off.
+    const max_limit = 96;
+    const capacity = 160;
     const backend: engine.Backend = if (use_metal) .metal else .cpu;
     const draft: engine.DraftRequest = if (draft_model) |path| .{ .file = path } else .embedded;
     var eng = try engine.Engine.open(alloc, io, model_path, backend, capacity, .f32, prompt_profile, draft);
@@ -1370,7 +1396,7 @@ fn speculativeLoop(alloc: std.mem.Allocator, io: std.Io, model_path: []const u8,
     const eos_tokens = try eng.encode(rendered);
     defer alloc.free(eos_tokens);
     resetForRun(&eng);
-    const eos = try engine.runLoop(&eng, eos_tokens, 24, &sampler, null, spec, null, logits, no_candidates, a, null, null);
+    const eos = try engine.runLoop(&eng, eos_tokens, max_limit, &sampler, null, spec, null, logits, no_candidates, a, null, null);
     if (eos.stop != .eos) return error.SpeculativeEosMismatch;
     std.debug.print("Speculative EOS passed: stopped after {d} tokens.\n", .{eos.timing.generated_tokens});
 
@@ -2782,4 +2808,362 @@ fn compareRows(label: []const u8, expected: []const u8, actual: []const f32, max
     const rel_rms = @sqrt(sum_sq / ref_sq);
     std.debug.print("{s}: max abs {e:.3}, relative RMS {e:.3} (bounds {e:.0} / {e:.0})\n", .{ label, max_abs.shown(), rel_rms, max_abs_bound, rel_rms_bound });
     if (!max_abs.within(max_abs_bound) or !(rel_rms <= rel_rms_bound)) return error.VisionMismatch;
+}
+
+// --- Inkling 2's DSpark drafter -----------------------------------------
+
+/// The pinned prompt of the DSpark trace: `inkling2-quick-brown`'s ids.
+const spark_trace_tokens = [_]u32{ 371, 157021, 161319, 220, 32329, 160581, 82, 150053 };
+
+/// The DSpark drafter's CPU trace on the pinned prompt: the prompt's commit
+/// rows committed, then one block from the prompt's greedy token writes
+/// every row's final hidden (`p{r}-h.f32`), and the greedy chain at `p_min`
+/// 0 writes the anchor and its 7 drafts (`greedy.txt`). Compared against the
+/// pinned rows in `tests/fixtures/inkling2-dspark` (`nuclis-gates compare
+/// --draft --positions 8`). The Metal drafter does not exist yet.
+fn sparkTrace(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, directory: []const u8, draft_model: []const u8) !void {
+    const inkling2 = inference.models.inkling2;
+    const dspark = inference.models.dspark;
+    if (use_metal) return error.MetalDrafterUnsupported;
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(inkling2.family, alloc, io, mapped, draft_model, &companion);
+    if (binding.dspark == null) return error.DraftSourceMismatch;
+    const tokens = spark_trace_tokens;
+    const capacity = tokens.len + dspark.block_size + 2;
+    var runtime = try inkling2.Runtime.init(alloc, io, mapped.view(), binding, capacity, false, true);
+    defer runtime.deinit();
+    const logits = try alloc.alloc(f32, inkling2.vocabulary);
+    defer alloc.free(logits);
+    const hidden = try alloc.alloc(f32, tokens.len * dspark.hidden_width);
+    defer alloc.free(hidden);
+    try runtime.prefill(&tokens, logits, hidden, null);
+    const anchor = argmax(logits);
+    try runtime.sparkCommit(&tokens, hidden);
+    const d = try runtime.sparkBlock(anchor);
+    for (0..dspark.block_size) |r| {
+        var name: [32]u8 = undefined;
+        try writeFloats(io, directory, try std.fmt.bufPrint(&name, "p{d}-h.f32", .{r}), d.hidden[r * dspark.embedding ..][0..dspark.embedding]);
+    }
+    var drafts: [dspark.max_proposals]u32 = undefined;
+    _ = try d.select(runtime.sparkTarget(), &drafts, 0);
+    var path: [4096]u8 = undefined;
+    const file = try std.Io.Dir.cwd().createFile(io, try std.fmt.bufPrint(&path, "{s}/greedy.txt", .{directory}), .{});
+    defer file.close(io);
+    var buffer: [256]u8 = undefined;
+    var writer = file.writer(io, &buffer);
+    try writer.interface.print("{d}\n", .{anchor});
+    for (drafts) |t| try writer.interface.print("{d}\n", .{t});
+    try writer.interface.flush();
+    std.debug.print("DSpark trace (cpu) written to {s}: anchor {d}, drafts {any}.\n", .{ directory, anchor, drafts });
+}
+
+const SparkSampling = enum { greedy, sampled };
+const SparkStatsOptions = struct {
+    /// Positions measured per kind: the continuation is this long plus the
+    /// deepest draft.
+    tokens: usize = 128,
+    seed: u64 = 1,
+    /// One kind by name, or every kind.
+    kind: ?[]const u8 = null,
+    /// One sampling, or greedy then temperature 1.
+    sampling: ?SparkSampling = null,
+};
+
+const spark_prose =
+    \\The lighthouse keeper had kept the same routine for thirty-one years. Each evening, an hour before dusk,
+    \\he climbed the hundred and twelve steps of the tower, wiped the salt from the great lens with a linen cloth,
+    \\and trimmed the wick until the flame burned clean and steady. The village below had long since stopped
+    \\noticing the light, the way a person stops hearing a clock that has always ticked in the hall. But the
+    \\fishermen noticed. On the nights when fog rolled in from the open sea and swallowed the harbor whole,
+    \\they steered by that single point of brightness, and more than one of them owed his life to it. When the
+    \\letter from the maritime office arrived in the spring, announcing that the station would be automated by
+    \\the end of the year, the keeper read it twice, folded it carefully, and placed it in the drawer beside his bed.
+;
+const SparkKind = struct { name: []const u8, text: []const u8, chat: bool };
+const spark_kinds = [_]SparkKind{
+    .{ .name = "prose", .text = spark_prose, .chat = false },
+    .{ .name = "code", .text = "Write a Python function that parses an ISO 8601 date string and returns a datetime object. Handle time zones and invalid input, and include a docstring and two short usage examples.", .chat = true },
+    .{ .name = "explanation", .text = "Explain how a hash table handles collisions. Compare separate chaining with open addressing, and say when you would choose each.", .chat = true },
+};
+
+/// The proposal policy's probability bins, as `draftStats` names them.
+const spark_bins = [_][]const u8{ ">= 0.9", "0.7-0.9", "0.5-0.7", "< 0.5" };
+
+/// A full-vocabulary softmax at temperature 1, in F64: its maximum and
+/// normalizer, so each probability costs one exponential.
+const Softmax = struct {
+    logits: []const f32,
+    maximum: f64,
+    total: f64,
+    fn of(logits: []const f32) Softmax {
+        var maximum: f64 = -std.math.inf(f64);
+        for (logits) |v| maximum = @max(maximum, v);
+        var total: f64 = 0;
+        for (logits) |v| total += @exp(@as(f64, v) - maximum);
+        return .{ .logits = logits, .maximum = maximum, .total = total };
+    }
+    fn at(self: Softmax, id: u32) f64 {
+        return @exp(@as(f64, self.logits[id]) - self.maximum) / self.total;
+    }
+};
+
+/// A draw from the full-vocabulary softmax at temperature 1.
+fn drawFrom(logits: []const f32, random: std.Random) u32 {
+    var maximum: f64 = -std.math.inf(f64);
+    for (logits) |v| maximum = @max(maximum, v);
+    var total: f64 = 0;
+    for (logits) |v| total += @exp(@as(f64, v) - maximum);
+    var u = random.float(f64) * total;
+    for (logits, 0..) |v, t| {
+        u -= @exp(@as(f64, v) - maximum);
+        if (u < 0) return @intCast(t);
+    }
+    return argmax(logits);
+}
+
+/// Acceptance sums over a run's positions: `reach[i]` the probability that
+/// drafts `0 … i - 1` were accepted (`reach[0]` the positions), `kept[i]`
+/// that `0 … i` were. Bins count the greedy chain's draft at each depth by
+/// its top probability, weighted by its reach.
+const SparkTally = struct {
+    reach: [max_spark]f64 = @splat(0),
+    kept: [max_spark]f64 = @splat(0),
+    bin_reach: [spark_bins.len]f64 = @splat(0),
+    bin_kept: [spark_bins.len]f64 = @splat(0),
+    const max_spark = inference.models.dspark.max_proposals;
+
+    /// One position: `accept[i]` the probability draft `i` is accepted given
+    /// the drafts before it were; `bins[i]` its bin, null to skip the bins.
+    fn add(self: *SparkTally, accept: []const f64, bins: ?[]const u8) void {
+        var reach: [max_spark]f64 = undefined;
+        var r: f64 = 1;
+        for (accept, 0..) |a, i| {
+            reach[i] = r;
+            r *= a;
+        }
+        self.addReached(reach[0..accept.len], accept, bins);
+    }
+
+    /// One position with each draft's reach estimated apart from its
+    /// acceptance: draft `i` is kept with `reach[i] * accept[i]`.
+    fn addReached(self: *SparkTally, reach: []const f64, accept: []const f64, bins: ?[]const u8) void {
+        for (reach, accept, 0..) |r, a, i| {
+            self.reach[i] += r;
+            self.kept[i] += r * a;
+            if (bins) |b| {
+                self.bin_reach[b[i]] += r;
+                self.bin_kept[b[i]] += r * a;
+            }
+        }
+    }
+
+    fn print(self: *const SparkTally, label: []const u8, with_bins: bool) void {
+        std.debug.print("  {s}:\n    depth  accepted given the drafts before   E(k) = tokens kept per verify\n", .{label});
+        var e: f64 = 1;
+        for (0..max_spark) |i| {
+            const conditional = if (self.reach[i] > 0) self.kept[i] / self.reach[i] else 0;
+            e += self.kept[i] / self.reach[0];
+            std.debug.print("    {d}      {d:>6.1} %  ({d:.1} / {d:.1})          E({d}) = {d:.3}\n", .{ i + 1, conditional * 100, self.kept[i], self.reach[i], i + 1, e });
+        }
+        if (!with_bins) return;
+        std.debug.print("    top-probability bins (reached drafts, accepted):\n", .{});
+        for (spark_bins, self.bin_reach, self.bin_kept) |name, r, k| {
+            std.debug.print("      {s:<8} {d:>6.1} %  ({d:.1} / {d:.1})\n", .{ name, if (r > 0) k / r * 100 else 0, k, r });
+        }
+    }
+};
+
+/// Whether `id` ranks among the `k` largest of `values` (strictly larger
+/// ones fewer than `k`).
+fn inTop(values: []const f32, id: u32, k: usize) bool {
+    var larger: usize = 0;
+    for (values) |v| {
+        if (v > values[id]) larger += 1;
+    }
+    return larger < k;
+}
+
+/// `--draft-stats` on Inkling 2 with its DSpark companion, on the CPU: per
+/// kind (raw prose, a chat code request, a chat explanation at the
+/// profile's default effort) and per sampling, the target decodes
+/// `tokens + 7` tokens (greedy, or temperature 1 with `seed`) keeping every
+/// row's logits and commit row; then at each of the first `tokens`
+/// positions the drafter, committed up to it, runs one block from the
+/// token chosen there. Reported per depth and per draft length k:
+/// - greedy: draft `i` accepted when it and the drafts before it equal the
+///   continuation;
+/// - temperature 1, target draws (spec § 5.6): the greedy chain, draft `i`
+///   accepted with the target's probability of it once the drafts before it
+///   matched the continuation (the expectation of the draw-equals-draft
+///   rule over that draw);
+/// - temperature 1, `min(1, p/q)`: a chain drawn from the drafter's own
+///   distribution, by the coupling `P(accepted | emitted x) = min(1,
+///   q(x)/p(x))` along the continuation, with the Markov chain fed the
+///   continuation's tokens.
+/// And the base-256 containment: how often each chain position's capped
+/// argmax lies among the 256 largest of its base logits (the target head on
+/// the block row, before the Markov bias), and at temperature 1 the share
+/// of the drafter's probability outside them.
+fn sparkStats(alloc: std.mem.Allocator, io: std.Io, mapped: *inference.weights.Mapped, use_metal: bool, draft_model: []const u8, options: SparkStatsOptions) !void {
+    const inkling2 = inference.models.inkling2;
+    if (use_metal) return error.MetalDrafterUnsupported;
+    var companion: ?inference.weights.Mapped = null;
+    defer if (companion) |*c| c.deinit(io);
+    const binding = try bindDraftSource(inkling2.family, alloc, io, mapped, draft_model, &companion);
+    if (binding.dspark == null) return error.DraftSourceMismatch;
+    var vocab = try inference.vocabulary.load(alloc, mapped.document, mapped.mapping.memory[0..@intCast(mapped.document.directory_bytes)], .{});
+    defer vocab.deinit();
+    var encoder = try inference.tokenizer.Encoder.init(alloc, &vocab);
+    defer encoder.deinit();
+    const profile = inference.profiles.forDocument(mapped.document) orelse return error.UnsupportedPromptTemplate;
+    var ran = false;
+    for (spark_kinds) |kind| {
+        if (options.kind) |only| if (!std.mem.eql(u8, only, kind.name)) continue;
+        const text = if (kind.chat)
+            try profile.render(alloc, &.{.{ .role = .user, .content = kind.text }}, &.{}, .medium, .{ .literal_marks = true })
+        else
+            try alloc.dupe(u8, kind.text);
+        defer alloc.free(text);
+        const prompt = try encoder.encode(alloc, text, true, .{});
+        defer alloc.free(prompt);
+        for ([_]SparkSampling{ .greedy, .sampled }) |sampling| {
+            if (options.sampling) |only| if (only != sampling) continue;
+            try sparkStatsRun(alloc, io, mapped.view(), binding, kind.name, prompt, sampling, options);
+            ran = true;
+        }
+    }
+    if (!ran) return error.UnknownStatsKind;
+}
+
+fn sparkStatsRun(alloc: std.mem.Allocator, io: std.Io, view: inference.weights.View, binding: inference.models.inkling2.Binding, name: []const u8, prompt: []const u32, sampling: SparkSampling, options: SparkStatsOptions) !void {
+    const inkling2 = inference.models.inkling2;
+    const dspark = inference.models.dspark;
+    const V = inkling2.vocabulary;
+    const W = dspark.hidden_width;
+    const k_max = dspark.max_proposals;
+    const steps = options.tokens + k_max;
+    const capacity = prompt.len + steps + dspark.block_size + 1;
+    var runtime = try inkling2.Runtime.init(alloc, io, view, binding, capacity, false, true);
+    defer runtime.deinit();
+    // Row j of `rows` is the target's logits after continuation token j
+    // (predicting j + 1); `first` the prompt's, predicting token 0.
+    const first = try alloc.alloc(f32, V);
+    defer alloc.free(first);
+    const rows = try alloc.alloc(f32, steps * V);
+    defer alloc.free(rows);
+    const commit_rows = try alloc.alloc(f32, (prompt.len + steps) * W);
+    defer alloc.free(commit_rows);
+    const continuation = try alloc.alloc(u32, steps + 1);
+    defer alloc.free(continuation);
+    var prng = std.Random.DefaultPrng.init(options.seed);
+    const random = prng.random();
+    const choose = struct {
+        fn f(logits: []const f32, s: SparkSampling, r: std.Random) u32 {
+            return if (s == .greedy) argmax(logits) else drawFrom(logits, r);
+        }
+    }.f;
+
+    const decode_start = std.Io.Clock.awake.now(io);
+    try runtime.prefill(prompt, first, commit_rows[0 .. prompt.len * W], null);
+    continuation[0] = choose(first, sampling, random);
+    for (0..steps) |j| {
+        try runtime.step(continuation[j], rows[j * V ..][0..V], null);
+        @memcpy(commit_rows[(prompt.len + j) * W ..][0..W], runtime.capture);
+        continuation[j + 1] = choose(rows[j * V ..][0..V], sampling, random);
+    }
+    const decode_ms = msSince(io, decode_start);
+
+    // The drafter alone from here: its caches and carried feature advance
+    // row by row as a run's commits would.
+    const d = &runtime.spark.?;
+    const target = runtime.sparkTarget();
+    const bases = try alloc.alloc(f32, k_max * dspark.padded_vocabulary);
+    defer alloc.free(bases);
+    var top_values: [256]f32 = undefined;
+    var top_ids: [256]u32 = undefined;
+    var greedy_tally: SparkTally = .{};
+    var draw_tally: SparkTally = .{};
+    var ratio_tally: SparkTally = .{};
+    var chain_positions: usize = 0;
+    var contained: usize = 0;
+    var forced_contained: usize = 0;
+    var outside_mass: f64 = 0;
+    var draft_ns: u64 = 0;
+    for (0..prompt.len) |t| try d.commitRow(&runtime.state, runtime.draft_layer, t, commit_rows[t * W ..][0..W]);
+    for (0..options.tokens) |s| {
+        const base = prompt.len + s;
+        if (s > 0) try d.commitRow(&runtime.state, runtime.draft_layer, base - 1, commit_rows[(base - 1) * W ..][0..W]);
+        const start = std.Io.Clock.awake.now(io);
+        try d.block(target, &runtime.state, runtime.draft_layer, continuation[s], base);
+        for (0..k_max) |i| try d.baseLogits(target, i + 1, bases[i * dspark.padded_vocabulary ..][0..dspark.padded_vocabulary]);
+        var drafts: [k_max]u32 = undefined;
+        var bins: [k_max]u8 = undefined;
+        var previous = continuation[s];
+        for (0..k_max) |i| {
+            const b = bases[i * dspark.padded_vocabulary ..][0..V];
+            const t = try d.chainStep(b, previous);
+            drafts[i] = t;
+            bins[i] = pmaxBin(inference.models.dspark_runtime.topProbability(d.logits));
+            if (inTop(b, t, 256)) contained += 1;
+            chain_positions += 1;
+            previous = t;
+        }
+        draft_ns += @intCast(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds());
+        // Draft i predicts continuation token s + 1 + i, from row s + i.
+        var accept: [k_max]f64 = undefined;
+        if (sampling == .greedy) {
+            for (0..k_max) |i| accept[i] = if (drafts[i] == continuation[s + 1 + i]) 1 else 0;
+            greedy_tally.add(&accept, &bins);
+            continue;
+        }
+        // The target-draw rule: draft i is reached when the continuation's
+        // draws matched the drafts before it (an unbiased estimate of the
+        // chance they would), and kept with the target's probability of it
+        // there, which the continuation's row gives only once reached.
+        var reach: [k_max]f64 = undefined;
+        var r: f64 = 1;
+        for (0..k_max) |i| {
+            reach[i] = r;
+            accept[i] = if (r > 0) Softmax.of(rows[(s + i) * V ..][0..V]).at(drafts[i]) else 0;
+            if (drafts[i] != continuation[s + 1 + i]) r = 0;
+        }
+        draw_tally.addReached(&reach, &accept, &bins);
+        // min(1, p/q) along the continuation, the chain fed its tokens.
+        d.restart();
+        for (0..k_max) |i| {
+            const b = bases[i * dspark.padded_vocabulary ..][0..V];
+            const previous_token = continuation[s + i];
+            const top = try d.chainStep(b, previous_token);
+            const x = continuation[s + 1 + i];
+            const q_soft = Softmax.of(d.logits);
+            const q = q_soft.at(x);
+            const p = Softmax.of(rows[(s + i) * V ..][0..V]).at(x);
+            accept[i] = if (p > 0) @min(1.0, q / p) else 1.0;
+            if (inTop(b, top, 256)) forced_contained += 1;
+            inference.models.dflash2_runtime.topK(b, &top_values, &top_ids);
+            var inside: f64 = 0;
+            for (top_ids) |id| inside += q_soft.at(id);
+            outside_mass += @max(0, 1 - inside);
+        }
+        ratio_tally.add(&accept, null);
+    }
+    const draft_ms = @as(f64, @floatFromInt(draft_ns)) / std.time.ns_per_ms;
+    std.debug.print("DSpark draft statistics (cpu, {s}, {s}, {d} prompt tokens, {d} positions, seed {d}):\n", .{ name, if (sampling == .greedy) "greedy" else "temperature 1", prompt.len, options.tokens, options.seed });
+    if (sampling == .greedy) {
+        greedy_tally.print("greedy", true);
+    } else {
+        draw_tally.print("temperature 1, every emitted token a target draw (greedy chain)", true);
+        ratio_tally.print("temperature 1, min(1, p/q) (chain drawn from the drafter)", false);
+    }
+    const n: f64 = @floatFromInt(chain_positions);
+    std.debug.print("  base-256 containment of the chain's argmax: {d}/{d} = {d:.3} %\n", .{ contained, chain_positions, @as(f64, @floatFromInt(contained)) / n * 100 });
+    if (sampling == .sampled) {
+        std.debug.print("  along the continuation: argmax contained {d}/{d} = {d:.3} %; drafter probability outside the base top-256, mean {e:.3}\n", .{ forced_contained, chain_positions, @as(f64, @floatFromInt(forced_contained)) / n * 100, outside_mass / n });
+    }
+    std.debug.print("  target decode {d:.0} ms for {d} tokens; drafter {d:.1} ms a block with its chain (cpu reference)\n", .{ decode_ms, prompt.len + steps, draft_ms / @as(f64, @floatFromInt(options.tokens)) });
+}
+
+fn msSince(io: std.Io, start: anytype) f64 {
+    return @as(f64, @floatFromInt(start.durationTo(std.Io.Clock.awake.now(io)).toNanoseconds())) / std.time.ns_per_ms;
 }

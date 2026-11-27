@@ -9,7 +9,9 @@
 //! whose history is the four short convolutions' last rows (card § Session
 //! state). The depth residual (`blocks`, the loop's prelude and bank) lives
 //! in the workspace, rebuilt from the token on every step, so it is never
-//! session state.
+//! session state. A bound DSpark drafter (`dspark_runtime.zig`) adds three
+//! attention layers after the target's and reads each step's commit row:
+//! `cur` entering applications 5, 23 and 41, and the head's normed input.
 const std = @import("std");
 const alloc_check = @import("../alloc_check.zig");
 const model = @import("inkling2.zig");
@@ -20,6 +22,9 @@ const cpu = @import("../backends/cpu/root.zig");
 const quant_encode = @import("../quant/encode.zig");
 const quant_decode = @import("../quant/decode.zig");
 const Tensor = @import("../formats/gguf.zig").Tensor;
+const dspark = @import("dspark.zig");
+const dspark_runtime = @import("dspark_runtime.zig");
+const Drafter = @import("../runtime/draft.zig").Drafter;
 
 pub const Observer = @import("../runtime/observer.zig").Observer;
 
@@ -139,12 +144,25 @@ pub const Runtime = struct {
     attention_scratch: []f64,
     padded_logits: []f32,
     row: []f32,
+    /// A verify row's logits when only its argmax is asked for.
+    verify_logits: []f32,
+    /// The DSpark drafter, when the binding carries one and a draft was
+    /// asked for; its caches are session layers from `draft_layer`.
+    spark: ?dspark_runtime.Draft,
+    draft_layer: usize,
+    /// The last step's commit row (`dspark.taps` rows of `embedding`), filled
+    /// only while a drafter is loaded.
+    capture: []f32,
 
     pub fn init(gpa: std.mem.Allocator, io: std.Io, view: weights.View, binding: model.Binding, capacity: usize, checkpoint: bool, draft: bool) !Runtime {
-        // No drafter is bound to this family; a draft request runs without one.
-        _ = draft;
-        const all = layouts(.f32, 0);
-        var state = try session.Session.init(gpa, &all, capacity, checkpoint);
+        const spark = draft and binding.dspark != null;
+        var all: [2 * model.block_count + dspark.block_count]session.Layout = undefined;
+        all[0 .. 2 * model.block_count].* = layouts(.f32, 0);
+        // The drafter's caches keep every row: a block writes past the
+        // position, ahead of what a windowed region's compaction admits.
+        for (all[2 * model.block_count ..]) |*layout| layout.* = .{ .attention = .{ .key_row = dspark.kv_width, .value_row = dspark.kv_width } };
+        const used = 2 * model.block_count + @as(usize, if (spark) dspark.block_count else 0);
+        var state = try session.Session.init(gpa, all[0..used], capacity, checkpoint);
         errdefer state.deinit();
         var storage: std.heap.ArenaAllocator = .init(gpa);
         errdefer storage.deinit();
@@ -178,6 +196,10 @@ pub const Runtime = struct {
         r.conv_scratch = try a.alloc(f64, model.kv_width);
         r.attention_scratch = try a.alloc(f64, capacity);
         r.padded_logits = try a.alloc(f32, model.padded_vocabulary);
+        r.verify_logits = try a.alloc(f32, model.vocabulary);
+        r.spark = if (spark) try dspark_runtime.Draft.init(a, io, binding.dspark.?, capacity) else null;
+        r.draft_layer = 2 * model.block_count;
+        r.capture = try a.alloc(f32, if (spark) dspark.taps * E else 0);
         // The widest row a projection decodes: the controller's `2·E` input.
         r.row = try a.alloc(f32, cpu.matvecScratch(@max(2 * E, model.query_width)));
         r.token_norm = try view.vector(a, binding.token_embedding_norm);
@@ -230,6 +252,7 @@ pub const Runtime = struct {
 
     pub fn reset(self: *Runtime) void {
         self.state.reset();
+        if (self.spark) |*d| d.reset();
     }
 
     fn mm(self: *Runtime, tensor: *const Tensor, input: []const f32, output: []f32) !void {
@@ -347,6 +370,9 @@ pub const Runtime = struct {
                     looped = true;
                 }
             }
+            if (self.spark != null) inline for (dspark.target_layers[0 .. dspark.taps - 1], 0..) |tap, slot| {
+                if (il == tap) @memcpy(rowOf(self.capture, slot), self.cur);
+            };
             @memcpy(self.residual, self.cur);
             try self.attention(il, block, c, count, looped);
             if (ip % model.residual_span == 0) {
@@ -367,10 +393,13 @@ pub const Runtime = struct {
                 if (o.layer) |report| try report(o.context, il, self.cur);
             }
         }
-        if (logits) |out| {
-            const y = rowOf(self.inputs, 0);
+        const y = rowOf(self.inputs, 0);
+        if (logits != null or self.spark != null) {
             try self.mixWithCur(count, self.output_query, y);
             try norm(y, y, self.output_norm);
+        }
+        if (self.spark != null) @memcpy(rowOf(self.capture, dspark.taps - 1), y);
+        if (logits) |out| {
             try self.mm(self.binding.output, y, self.padded_logits);
             for (out, self.padded_logits[0..model.vocabulary]) |*x, z| {
                 x.* = model.final_softcap * std.math.tanh(z / model.final_softcap);
@@ -521,6 +550,128 @@ pub const Runtime = struct {
         };
         try cpu.experts.ffn(self.io, spec, f, self.indices, self.route_weights, self.expert_out, self.expert_scratch, self.accumulator);
         try cpu.recurrent.shortConvolution(self.expert_out, c.ffn_post_conv, null, self.history(il, ffn_offset, E), self.projected, taps, &.{});
+    }
+
+    // --- verification and the DSpark drafter ----------------------------
+
+    /// The row a drafter's `commit` reads for the last consumed token: the
+    /// four target rows, empty without a drafter.
+    fn commitRow(self: *const Runtime) []const f32 {
+        return self.capture;
+    }
+
+    /// Consumes `tokens` one step each, reading logits on the last; `hidden`
+    /// (`tokens.len` commit rows), when given, receives each row's
+    /// `commitRow` for the prompt commit.
+    pub fn prefill(self: *Runtime, tokens: []const u32, logits: ?[]f32, hidden: ?[]f32, observer: ?Observer) !void {
+        if (tokens.len == 0) return error.InvalidShape;
+        const width = self.commitRow().len;
+        if (hidden) |out| if (width == 0 or out.len != tokens.len * width) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, if (i + 1 == tokens.len) logits else null, observer);
+            if (hidden) |out| @memcpy(out[i * width ..][0..width], self.commitRow());
+        }
+    }
+
+    /// Reference verify: one step per token, keeping every row's logits and,
+    /// when asked, the commit row the drafter's `commit` reads.
+    pub fn verify(self: *Runtime, tokens: []const u32, rows: []f32, h_rows: ?[]f32, observer: ?Observer) !void {
+        const width = self.commitRow().len;
+        if (rows.len != tokens.len * model.vocabulary) return error.InvalidShape;
+        if (h_rows) |h| if (width == 0 or h.len != tokens.len * width) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, rows[i * model.vocabulary ..][0..model.vocabulary], observer);
+            if (h_rows) |h| @memcpy(h[i * width ..][0..width], self.commitRow());
+        }
+    }
+
+    /// Reference verify, greedy: the same steps with a per-row argmax
+    /// instead of full logits.
+    pub fn verifyGreedy(self: *Runtime, tokens: []const u32, out: []u32, h_rows: ?[]f32, observer: ?Observer) !void {
+        const width = self.commitRow().len;
+        if (out.len != tokens.len) return error.InvalidShape;
+        if (h_rows) |h| if (width == 0 or h.len != tokens.len * width) return error.InvalidShape;
+        for (tokens, 0..) |token, i| {
+            try self.step(token, self.verify_logits, observer);
+            out[i] = argmax(self.verify_logits);
+            if (h_rows) |h| @memcpy(h[i * width ..][0..width], self.commitRow());
+        }
+    }
+
+    fn argmax(values: []const f32) u32 {
+        var best: usize = 0;
+        for (values, 0..) |v, i| {
+            if (v > values[best]) best = i;
+        }
+        return @intCast(best);
+    }
+
+    pub fn sparkTarget(self: *const Runtime) dspark_runtime.Target {
+        return .{ .view = self.view, .token_embedding = self.binding.token_embedding, .output = self.binding.output };
+    }
+
+    /// Advances the drafter over committed tokens: each commit row's keys
+    /// and values enter its caches at the token's position, and the last
+    /// row's context feature is carried. The accepted prefix ends at
+    /// `state.position`; the caller has already `recover`ed the session.
+    pub fn sparkCommit(self: *Runtime, tokens: []const u32, h_rows: []const f32) !void {
+        const d = &(self.spark orelse return error.NoDraftBlock);
+        if (h_rows.len != tokens.len * dspark.hidden_width) return error.InvalidShape;
+        if (self.state.position < tokens.len) return error.InvalidShape;
+        const start = self.state.position - tokens.len;
+        for (0..tokens.len) |i| try d.commitRow(&self.state, self.draft_layer, start + i, h_rows[i * dspark.hidden_width ..][0..dspark.hidden_width]);
+    }
+
+    /// One block from `token` at the session position, then the greedy
+    /// Markov chain; at most `max_proposals` drafts, none when the row
+    /// before the position was never committed or the block's 8 rows do not
+    /// fit in the context.
+    pub fn sparkPropose(self: *Runtime, token: u32, out: []u32, p_min: f32) !usize {
+        const d = &(self.spark orelse return error.NoDraftBlock);
+        if (token >= model.vocabulary) return error.InvalidTokenId;
+        if (!std.math.isFinite(p_min) or p_min < 0 or p_min > 1) return error.InvalidShape;
+        const count: usize = @min(out.len, dspark.max_proposals);
+        // A block that does not fit in the context drafts nothing.
+        if (count == 0 or !d.ready(self.state.position) or self.state.position + dspark.block_size > self.state.capacity) return 0;
+        try d.block(self.sparkTarget(), &self.state, self.draft_layer, token, self.state.position);
+        return d.select(self.sparkTarget(), out[0..count], p_min);
+    }
+
+    /// Runs the block from `token` at the session position without choosing:
+    /// the caller walks its chain with `Draft.nextPosition`.
+    pub fn sparkBlock(self: *Runtime, token: u32) !*dspark_runtime.Draft {
+        const d = &(self.spark orelse return error.NoDraftBlock);
+        if (token >= model.vocabulary) return error.InvalidTokenId;
+        if (!d.ready(self.state.position)) return error.NoDraftContext;
+        try d.block(self.sparkTarget(), &self.state, self.draft_layer, token, self.state.position);
+        return d;
+    }
+
+    /// The contract value the engine holds, or null when no drafter is loaded.
+    pub fn drafter(self: *Runtime) ?Drafter {
+        if (self.spark == null) return null;
+        return .{ .host = self, .hidden = dspark.hidden_width, .max_proposals = dspark.max_proposals, .propose_fn = proposeFn, .commit_fn = commitFn, .reset_fn = resetFn, .carried_fn = carriedFn, .bytes_fn = bytesFn };
+    }
+    fn proposeFn(host: *anyopaque, token: u32, out: []u32, p_min: f32) anyerror!usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.sparkPropose(token, out, p_min);
+    }
+    fn commitFn(host: *anyopaque, tokens: []const u32, h_rows: []const f32) anyerror!void {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return self.sparkCommit(tokens, h_rows);
+    }
+    fn resetFn(host: *anyopaque) void {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        if (self.spark) |*d| d.reset();
+    }
+    fn carriedFn(host: *anyopaque) []f32 {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        return if (self.spark) |d| d.carried else &.{};
+    }
+    fn bytesFn(host: *anyopaque) usize {
+        const self: *Runtime = @ptrCast(@alignCast(host));
+        const d = self.spark orelse return 0;
+        return d.bytes() + (self.capture.len + self.verify_logits.len) * @sizeOf(f32);
     }
 };
 
