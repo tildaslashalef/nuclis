@@ -23,19 +23,18 @@ Decide which of three it is before writing code, and write the answer in
 the unit's design:
 
 ```sh
-nuclis model inspect <owner/repo> --file <name>
-scripts/fixtures/gguf-inventory.py <file.gguf> \
-  --against inference/src/models/fixtures/<nearest>.json
+nuclis model inspect <hub-url> --against <nearest index name>
 ```
 
 `inspect` reads the remote directory (or safetensors headers and
-`config.json`; no download) and says if every encoding has a kernel. `--against` prints, with the architecture
-prefix and block numbers folded, the metadata keys and tensor names only
-one side has, then the values and tensor shapes that differ under a shared
-name: the E4B against the 26B-A4B is six per-layer embedding tensors on one
-side and the eight expert tensors on the other, then its head counts,
-window, block count, and widths. Same names with other values is the
-second row below, not the first.
+`config.json`; no download), says if every encoding has a kernel and what
+the adapter binds, and `--against` names the kind: with block numbers and
+the architecture prefix folded, the keys and tensors only one side has,
+then the values, shapes, and block sets that differ under a shared name
+(`general.*` and `quantize.*` only counted). The E4B against the 26B-A4B
+is the per-layer embedding tensors on one side and the expert tensors on
+the other, then head counts, window, block count, and widths. Same names
+with other values is the second row below, not the first.
 
 | What differs | It is | Start at |
 | --- | --- | --- |

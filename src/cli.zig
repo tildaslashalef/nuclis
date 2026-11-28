@@ -4,6 +4,7 @@ const std = @import("std");
 const inference = @import("inference");
 const paths = @import("paths.zig");
 const inspection = @import("inspect.zig");
+const compare = @import("inventory.zig");
 const validation = @import("validate.zig");
 const generate = @import("generate.zig");
 const bench = @import("bench.zig");
@@ -277,6 +278,11 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0) return error.MissingOptionValue;
             options.detail.tensor = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--against")) {
+            if (options.detail.against != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
+            options.detail.against = args[i];
         } else if (command == .inspect and std.mem.eql(u8, args[i], "--pull")) {
             if (options.inspect_pull) return error.DuplicateOption;
             options.inspect_pull = true;
@@ -607,6 +613,13 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             set.* = true;
             continue;
         }
+        if (options.model_action == .inspect and std.mem.eql(u8, flag, "--against")) {
+            if (options.detail.against != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
+            options.detail.against = args[i];
+            continue;
+        }
         if (options.model_action == .inspect and std.mem.eql(u8, flag, "--pull")) {
             if (options.inspect_pull) return error.DuplicateOption;
             options.inspect_pull = true;
@@ -759,7 +772,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
             },
             .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, ui, diag),
             .inspect => {
-                var judged = try model.inspect(alloc, io, environ, options.pull, options.detail, options.json, out, ui, diag);
+                var judged = try model.inspect(alloc, io, environ, dir, options.pull, options.detail, options.json, out, ui, diag);
                 defer judged.deinit();
                 if (options.inspect_pull) try model.pullJudged(alloc, io, environ, dir, options.pull, config_path, judged, options.json, out, ui, diag);
                 return;
@@ -933,7 +946,7 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
     }
     // A Hub URL is read remotely, as `model inspect` reads it.
     if (options.command == .inspect) if (options.model) |m| if (model.isHubReference(m)) {
-        var judged = try model.inspect(alloc, io, environ, .{ .repo = m }, options.detail, options.json, out, ui, diag);
+        var judged = try model.inspect(alloc, io, environ, root, .{ .repo = m }, options.detail, options.json, out, ui, diag);
         defer judged.deinit();
         if (options.inspect_pull) try model.pullJudged(alloc, io, environ, root orelse return error.MissingHome, .{ .repo = m }, config_path, judged, options.json, out, ui, diag);
         return;
@@ -1031,7 +1044,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     try peek.render(arena_state.allocator(), out, options.json, ui);
                     break :blk {};
                 }
-                const result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
+                var result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
+                if (options.detail.against) |text| {
+                    const a = arena_state.allocator();
+                    const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
+                    result.against = .{ .label = there.label, .diff = try compare.diff(a, try model.localInventory(a, alloc, io, path, diag), there.inventory) };
+                }
                 try result.render(arena_state.allocator(), out, options.json, ui);
                 break :blk {};
             }
@@ -1064,6 +1082,11 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 defer arena_state.deinit();
                 if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document, try readDirectory(arena_state.allocator(), io, path, document));
                 if (options.detail.tensors) result.tensors = try inspection.tensorRows(arena_state.allocator(), document);
+                if (options.detail.against) |text| {
+                    const a = arena_state.allocator();
+                    const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
+                    result.against = .{ .label = there.label, .diff = try compare.diff(a, try compare.fromGguf(a, document), there.inventory) };
+                }
                 try result.render(arena_state.allocator(), out, options.json, ui);
             }
             break :blk {};
@@ -1722,6 +1745,7 @@ test {
     _ = eval;
     _ = discover;
     _ = @import("interrupt.zig");
+    _ = @import("inventory.zig");
     _ = @import("timing.zig");
     _ = @import("web/root.zig");
     _ = completion;

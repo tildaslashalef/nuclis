@@ -32,6 +32,7 @@ const catalog = @import("catalog.zig");
 const audio_catalog = @import("audio/catalog.zig");
 const interrupt = @import("interrupt.zig");
 const inspection = @import("inspect.zig");
+const compare = @import("inventory.zig");
 const kit = @import("ui.zig");
 const errors = @import("errors.zig");
 const Allocator = std.mem.Allocator;
@@ -2478,7 +2479,28 @@ pub const Verdict = struct {
     /// The first offending tensor and its encoding when they are the reason.
     tensor: ?[]const u8 = null,
     encoding: ?[]const u8 = null,
+    /// When the adapter binds the file: the configuration it names and the
+    /// decoder's layer kinds.
+    binding: ?Binding = null,
+    pub const Binding = struct { profile: []const u8, layers: []const inference.models.LayerKind };
 };
+
+/// "profile qwen35_27b: 48 delta_net + 16 full_attention".
+fn bindingText(arena: Allocator, b: Verdict.Binding) ![]const u8 {
+    var text: std.ArrayList(u8) = .empty;
+    try text.print(arena, "profile {s}", .{b.profile});
+    for (b.layers, 0..) |l, i| try text.print(arena, "{s}{d} {s}", .{ if (i == 0) ": " else " + ", l.count, l.kind });
+    return text.items;
+}
+
+/// "; compare with `--against gemma-4-e4b-qat`" naming the index entries of
+/// `architecture` (at most three), or "" when there are none.
+fn againstHint(arena: Allocator, architecture: []const u8) ![]const u8 {
+    var names: std.ArrayList([]const u8) = .empty;
+    for (&catalog.artifacts) |*a| if (std.mem.eql(u8, a.architecture, architecture) and a.listed(false) and names.items.len < 3) try names.append(arena, a.name);
+    if (names.items.len == 0) return "";
+    return arena.print("; compare: `--against {s}`", .{try std.mem.join(arena, "` or `--against ", names.items)});
+}
 
 pub const InspectReport = struct {
     schema_version: u32 = 1,
@@ -2587,12 +2609,13 @@ pub fn pullJudged(gpa: Allocator, io: std.Io, environ: *const std.process.Enviro
     return pull(gpa, io, environ, root, options, json, out, ui, diag);
 }
 
-pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, given: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !Judged {
+pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: ?[]const u8, given: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !Judged {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     if (given.repo.len == 0) return error.MissingRepository;
     const options = try fromReference(arena, given, diag);
+    const against: ?Reference = if (detail.against) |text| try loadReference(arena, gpa, io, environ, root, text, diag) else null;
     const client = hf.Client.init(gpa, io, environ);
     var request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .filename = options.file };
     const entry = catalog.find(options.repo);
@@ -2632,7 +2655,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
             diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; a safetensors header lists its tensors' dtypes", .{file.name});
             return error.UnsupportedFormat;
         }
-        var report = try inspectSafetensors(arena, gpa, client, request, selected, .{
+        var report = try inspectSafetensors(arena, gpa, client, request, selected, against, .{
             .name = null,
             .repo = request.repo_id,
             .file = try arena.dupe(u8, file.name),
@@ -2655,7 +2678,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .revision = revision,
         .size = file.size,
         .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
-    }, detail, diag);
+    }, detail, against, diag);
     var shown = report;
     shown.card = try ownCard(arena, remote.card);
     try renderInspect(arena, out, shown, json, ui);
@@ -2738,7 +2761,34 @@ const max_remote_config_bytes = 1024 * 1024;
 
 /// Reads every shard's header of a selected safetensors set, and the
 /// `config.json` in its folder, through the Hub's range reads.
-fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, id: Identity, diag: *config.Diagnostic) !InspectReport {
+fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, against: ?Reference, id: Identity, diag: *config.Diagnostic) !InspectReport {
+    const set = try readSafetensorsSet(arena, gpa, client, request, selected, id.file, diag);
+    var report = finish(id, set.bytes_read, set.requests, null, .{ .status = .not_runnable, .reason = "" });
+    report.safetensors = try inspection.safetensorsHeaders(arena, set.shards, try arena.print("{s}/{s}", .{ id.repo, id.file }), id.file);
+    report.config = set.config;
+    report.config_omitted = set.config_omitted;
+    if (against) |there| report.safetensors.?.against = .{ .label = there.label, .diff = try compare.diff(arena, try set.inventory(arena), there.inventory) };
+    return report;
+}
+
+/// Every shard's header of a selected safetensors set and the scalars of
+/// the `config.json` in its folder, read remotely into `arena`.
+const SafetensorsSet = struct {
+    shards: []const inspection.ShardHeader,
+    config: ?[]const inspection.ConfigRow,
+    config_omitted: usize,
+    bytes_read: u64,
+    requests: usize,
+
+    fn inventory(set: SafetensorsSet, arena: Allocator) !compare.Inventory {
+        const docs = try arena.alloc(*const inference.safetensors.Document, set.shards.len);
+        for (set.shards, docs) |h, *d| d.* = h.document;
+        return compare.fromSafetensors(arena, docs, set.config orelse &.{});
+    }
+};
+
+fn readSafetensorsSet(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, first: []const u8, diag: *config.Diagnostic) !SafetensorsSet {
+    const id = struct { file: []const u8 }{ .file = first };
     var shards: std.ArrayList(inspection.ShardHeader) = .empty;
     var config_file: ?hf.RemoteFile = null;
     const folder = std.fs.path.dirname(id.file) orelse "";
@@ -2762,24 +2812,107 @@ fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, reque
         requests += counted.requests;
         try shards.append(arena, .{ .file = try arena.dupe(u8, f.name), .document = doc });
     }
-    var bytes_read: u64 = 0;
-    for (shards.items) |h| bytes_read += 8 + h.document.header_bytes;
-    var report = finish(id, bytes_read, requests, null, .{ .status = .not_runnable, .reason = "" });
-    report.safetensors = try inspection.safetensorsHeaders(arena, shards.items, try arena.print("{s}/{s}", .{ id.repo, id.file }), id.file);
+    var set: SafetensorsSet = .{ .shards = shards.items, .config = null, .config_omitted = 0, .bytes_read = 0, .requests = requests };
+    for (shards.items) |h| set.bytes_read += 8 + h.document.header_bytes;
     if (config_file) |c| if (c.size > 0 and c.size <= max_remote_config_bytes) {
         var config_request = request;
         config_request.filename = c.name;
         config_request.exact = true;
         const bytes = try client.readRange(config_request, 0, @intCast(c.size));
         defer gpa.free(bytes);
-        report.requests += 1;
-        report.bytes_read += bytes.len;
+        set.requests += 1;
+        set.bytes_read += bytes.len;
         if (inspection.configRows(arena, try arena.dupe(u8, bytes))) |rows| {
-            report.config = rows.rows;
-            report.config_omitted = rows.omitted;
+            set.config = rows.rows;
+            set.config_omitted = rows.omitted;
         } else |_| {}
     };
-    return report;
+    return set;
+}
+
+/// What `--against` compares with: its inventory and how it is named.
+pub const Reference = struct { label: []const u8, inventory: compare.Inventory };
+
+/// `--against <ref>`: a Hub URL (read remotely), an index name (its main
+/// file: the local copy when pulled, else the Hub's at the pinned commit),
+/// or a local GGUF or safetensors path. Everything lives in `arena`.
+pub fn loadReference(arena: Allocator, gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: ?[]const u8, text: []const u8, diag: *config.Diagnostic) !Reference {
+    if (catalog.find(text)) |a| {
+        const main_file = a.main();
+        if (root) |r| {
+            const path = try catalog.localPath(arena, try modelsDir(arena, r), a, main_file);
+            if (std.Io.Dir.cwd().access(io, path, .{})) |_| {
+                return .{ .label = try arena.print("{s} ({s})", .{ a.name, path }), .inventory = try localInventory(arena, gpa, io, path, diag) };
+            } else |_| {}
+        }
+        return remoteReference(arena, gpa, io, environ, .{ .repo = a.repo, .file = main_file.path, .revision = a.revision }, a.name, diag);
+    }
+    if (isHubReference(text)) return remoteReference(arena, gpa, io, environ, try fromReference(arena, .{ .repo = text }, diag), text, diag);
+    std.Io.Dir.cwd().access(io, text, .{}) catch {
+        diag.set("--against {s}: not an index name, a Hub URL, or a file here", .{text});
+        return error.UnknownModel;
+    };
+    return .{ .label = text, .inventory = try localInventory(arena, gpa, io, text, diag) };
+}
+
+fn remoteReference(arena: Allocator, gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, label: []const u8, diag: *config.Diagnostic) !Reference {
+    const client = hf.Client.init(gpa, io, environ);
+    const request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .filename = options.file };
+    var remote = client.list(request) catch |err| return listFailure(err, arena, client, request, options.repo, diag);
+    defer remote.deinit();
+    const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
+        diag.set("--against {s}: {d} model files; name one (a blob URL)", .{ label, remote.files.len });
+        return error.SelectionRequired;
+    };
+    const file = selected[0];
+    var pinned = request;
+    pinned.revision = try arena.dupe(u8, &remote.revision);
+    pinned.filename = file.name;
+    if (hf.format(file.name) == .safetensors) {
+        const set = try readSafetensorsSet(arena, gpa, client, pinned, selected, file.name, diag);
+        return .{ .label = label, .inventory = try set.inventory(arena) };
+    }
+    var reader: HubRange = .{ .client = client, .request = pinned };
+    var head: std.ArrayList(u8) = .empty;
+    defer head.deinit(gpa);
+    var requests: usize = 0;
+    var rejection: inference.gguf.Rejection = .{};
+    var doc = fetchHead(gpa, &reader, file.name, file.size, &head, &requests, &rejection, diag) catch |err| {
+        if (diag.len == 0) diag.set("--against {s}: not a GGUF nuclis reads ({s})", .{ label, @errorName(err) });
+        return err;
+    };
+    defer doc.deinit();
+    return .{ .label = label, .inventory = try compare.fromGguf(arena, doc) };
+}
+
+/// A local GGUF file, or a safetensors file, index, or directory with the
+/// `config.json` beside it.
+pub fn localInventory(arena: Allocator, gpa: Allocator, io: std.Io, path: []const u8, diag: *config.Diagnostic) !compare.Inventory {
+    const stat = try std.Io.Dir.cwd().statFile(io, path, .{});
+    if (stat.kind == .directory or std.mem.endsWith(u8, path, ".safetensors") or std.mem.endsWith(u8, path, ".safetensors.index.json")) {
+        var checkpoint = inference.safetensors.Checkpoint.open(gpa, io, path, .{}) catch |err| {
+            diag.set("{s}: not a safetensors checkpoint nuclis reads ({s})", .{ path, @errorName(err) });
+            return err;
+        };
+        defer checkpoint.deinit(io);
+        const docs = try arena.alloc(*const inference.safetensors.Document, checkpoint.shards.len);
+        for (checkpoint.shards, docs) |*shard, *d| d.* = &shard.document;
+        const dir = if (stat.kind == .directory) path else std.fs.path.dirname(path) orelse ".";
+        const rows = localConfig(arena, io, dir) catch &.{};
+        return compare.fromSafetensors(arena, docs, rows);
+    }
+    var doc = inference.gguf.open(gpa, io, path, .{}) catch |err| {
+        diag.set("{s}: not a GGUF nuclis reads ({s})", .{ path, @errorName(err) });
+        return err;
+    };
+    defer doc.deinit();
+    return compare.fromGguf(arena, doc);
+}
+
+fn localConfig(arena: Allocator, io: std.Io, dir: []const u8) ![]const inspection.ConfigRow {
+    const path = try std.fs.path.join(arena, &.{ dir, "config.json" });
+    const bytes = try std.Io.Dir.cwd().readFileAlloc(io, path, arena, .limited(max_remote_config_bytes));
+    return (try inspection.configRows(arena, bytes)).rows;
 }
 
 /// Counts a range reader's requests and copies each chunk into the caller's
@@ -2933,18 +3066,30 @@ const HubRange = struct {
 /// by `gpa` (possibly fewer than `count`, never none); production wraps
 /// `readRange`, the tests a byte slice. Every string of the report lives
 /// in `arena`.
-fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Identity, detail: inspection.Detail, diag: *config.Diagnostic) !InspectReport {
-    var head: std.ArrayList(u8) = .empty;
-    defer head.deinit(gpa);
-    var requests: usize = 0;
-    const limit: u64 = @min(id.size, max_inspect_bytes);
-    var doc = while (true) {
+/// A GGUF directory read from the head of a remote file: the parsed
+/// document, the bytes read (owned by `gpa`), and the requests made.
+const Head = struct {
+    doc: inference.gguf.Document,
+    bytes: std.ArrayList(u8),
+    requests: usize,
+    fn deinit(self: *Head, gpa: Allocator) void {
+        self.doc.deinit();
+        self.bytes.deinit(gpa);
+    }
+};
+
+/// Fetches the head of the file in `max_range_bytes` steps until the
+/// directory parses. A parse error passes through with `rejection` filled
+/// and `head` holding what was read, for the caller to judge.
+fn fetchHead(gpa: Allocator, reader: anytype, file: []const u8, size: u64, head: *std.ArrayList(u8), requests: *usize, rejection: *inference.gguf.Rejection, diag: *config.Diagnostic) !inference.gguf.Document {
+    const limit: u64 = @min(size, max_inspect_bytes);
+    while (true) {
         var fixed: std.Io.Reader = .fixed(head.items);
-        var rejection: inference.gguf.Rejection = .{};
-        if (inference.gguf.parseDiagnosed(gpa, &fixed, id.size, .{}, &rejection)) |parsed| break parsed else |err| switch (err) {
+        rejection.* = .{};
+        if (inference.gguf.parseDiagnosed(gpa, &fixed, size, .{}, rejection)) |parsed| return parsed else |err| switch (err) {
             error.EndOfStream => {
                 if (head.items.len >= limit) {
-                    diag.set("{s}: the directory does not end within the first {d} bytes; not a GGUF nuclis reads", .{ id.file, limit });
+                    diag.set("{s}: the directory does not end within the first {d} bytes; not a GGUF nuclis reads", .{ file, limit });
                     return error.DirectoryTooLarge;
                 }
                 const count: usize = @intCast(@min(hf.max_range_bytes, limit - head.items.len));
@@ -2952,25 +3097,36 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
                 defer gpa.free(chunk);
                 if (chunk.len == 0) return error.UnexpectedEndOfFile;
                 try head.appendSlice(gpa, chunk);
-                requests += 1;
+                requests.* += 1;
             },
-            error.UnsupportedTensorType, error.InvalidShape, error.Overflow => {
-                const tensor = rejection.tensor() orelse {
-                    diag.set("{s}: not a GGUF nuclis reads ({s})", .{ id.file, @errorName(err) });
-                    return error.InvalidGguf;
-                };
-                const encoding = try encodingLabel(arena, rejection.encoding_id.?);
-                const reason = if (err == error.UnsupportedTensorType)
-                    try arena.print("tensor {s} uses encoding {s}, which nuclis does not store", .{ tensor, encoding })
-                else
-                    try arena.print("tensor {s} has a shape encoding {s} cannot store", .{ tensor, encoding });
-                return finish(id, head.items.len, requests, null, .{ .status = .not_runnable, .reason = reason, .tensor = try arena.dupe(u8, tensor), .encoding = encoding });
-            },
-            else => {
+            else => return err,
+        }
+    }
+}
+
+fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Identity, detail: inspection.Detail, against: ?Reference, diag: *config.Diagnostic) !InspectReport {
+    var head: std.ArrayList(u8) = .empty;
+    defer head.deinit(gpa);
+    var requests: usize = 0;
+    var rejection: inference.gguf.Rejection = .{};
+    var doc = fetchHead(gpa, reader, id.file, id.size, &head, &requests, &rejection, diag) catch |err| switch (err) {
+        error.UnsupportedTensorType, error.InvalidShape, error.Overflow => {
+            const tensor = rejection.tensor() orelse {
                 diag.set("{s}: not a GGUF nuclis reads ({s})", .{ id.file, @errorName(err) });
                 return error.InvalidGguf;
-            },
-        }
+            };
+            const encoding = try encodingLabel(arena, rejection.encoding_id.?);
+            const reason = if (err == error.UnsupportedTensorType)
+                try arena.print("tensor {s} uses encoding {s}, which nuclis does not store", .{ tensor, encoding })
+            else
+                try arena.print("tensor {s} has a shape encoding {s} cannot store", .{ tensor, encoding });
+            return finish(id, head.items.len, requests, null, .{ .status = .not_runnable, .reason = reason, .tensor = try arena.dupe(u8, tensor), .encoding = encoding });
+        },
+        error.DirectoryTooLarge, error.UnexpectedEndOfFile, error.OutOfMemory => return err,
+        else => {
+            if (diag.len == 0) diag.set("{s}: not a GGUF nuclis reads ({s})", .{ id.file, @errorName(err) });
+            return error.InvalidGguf;
+        },
     };
     defer doc.deinit();
     // The snapshot borrows the document's strings; the report outlives it.
@@ -2979,6 +3135,7 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
     if (snapshot.name) |n| snapshot.name = try arena.dupe(u8, n);
     if (detail.metadata) snapshot.metadata = try inspection.metadataRows(arena, doc, head.items);
     if (detail.tensors) snapshot.tensors = try inspection.tensorRows(arena, doc);
+    if (against) |there| snapshot.against = .{ .label = there.label, .diff = try compare.diff(arena, try compare.fromGguf(arena, doc), there.inventory) };
     var report = finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
     if (detail.tensor) |name| {
         const tensor = inspection.findTensor(doc, name) orelse {
@@ -3042,7 +3199,7 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
         };
         return .{
             .status = .not_runnable,
-            .reason = if (architecture.len == 0) "the file declares no general.architecture" else try arena.print("no adapter for architecture \"{s}\"", .{architecture}),
+            .reason = if (architecture.len == 0) "the file declares no general.architecture" else try arena.print("no adapter for architecture \"{s}\"; `--against <index name>` shows how it differs from a family nuclis runs", .{architecture}),
         };
     };
     for (doc.tensors) |tensor| if (!inference.models.registry.executableEncoding(adapter, tensor.encoding_id)) {
@@ -3056,8 +3213,12 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
     };
     const summary = inference.models.registry.validate(adapter, gpa, doc) catch |err| switch (err) {
         error.OutOfMemory => return err,
-        else => return .{ .status = .not_runnable, .reason = try arena.print("the {s} adapter rejects the file: {s}", .{ @tagName(adapter), @errorName(err) }) },
+        else => return .{ .status = .not_runnable, .reason = try arena.print("the {s} adapter rejects the file: {s}{s}", .{ @tagName(adapter), @errorName(err), try againstHint(arena, architecture) }) },
     };
+    const layers = try arena.dupe(inference.models.LayerKind, summary.layer_kinds);
+    for (layers) |*l| l.kind = try arena.dupe(u8, l.kind);
+    const binding: Verdict.Binding = .{ .profile = try arena.dupe(u8, summary.profile), .layers = layers };
+    const bound = try bindingText(arena, binding);
     if (!summary.inference_available) return .{
         .status = .not_runnable,
         .reason = try arena.print("the {s} adapter binds it, but no executor runs the architecture", .{@tagName(adapter)}),
@@ -3066,14 +3227,16 @@ fn judge(arena: Allocator, gpa: Allocator, doc: *const inference.gguf.Document, 
         .status = .supported,
         .catalog = pinned.?.artifact.name,
         .role = .main,
-        .reason = try arena.print("index entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it", .{ pinned.?.artifact.name, @tagName(adapter) }),
+        .binding = binding,
+        .reason = try arena.print("index entry {s}: the Hub's digest at this commit equals the pinned one, and the {s} adapter binds it ({s})", .{ pinned.?.artifact.name, @tagName(adapter), bound }),
     };
     return .{
         .status = .runnable,
+        .binding = binding,
         .reason = if (pinned != null)
-            try arena.print("the {s} adapter binds it; the index pins another digest for this file (entry {s})", .{ @tagName(adapter), pinned.?.artifact.name })
+            try arena.print("the {s} adapter binds it ({s}); the index pins another digest for this file (entry {s})", .{ @tagName(adapter), bound, pinned.?.artifact.name })
         else
-            try arena.print("the {s} adapter binds it; not in the index", .{@tagName(adapter)}),
+            try arena.print("the {s} adapter binds it ({s}); not in the index", .{ @tagName(adapter), bound }),
     };
 }
 
@@ -3621,7 +3784,7 @@ fn inspectFixture(arena: Allocator, gpa: Allocator, mutation: Mutation, sha256: 
         // The weights would follow the aligned directory.
         .size = std.mem.alignForward(u64, directory.len, 32) + inventory.file_bytes,
         .sha256 = sha256,
-    }, .{}, &diag);
+    }, .{}, null, &diag);
 }
 
 test "--register knows a speech checkpoint from its config.json and refuses another" {
@@ -3732,7 +3895,7 @@ test "inspect judges the pinned directory supported, runnable, or not, from the 
     // An architecture without an adapter.
     const foreign = try inspectFixture(arena, gpa, .{ .architecture = "gemma3" }, entry.main().sha256, 1 << 20);
     try std.testing.expectEqual(.not_runnable, foreign.verdict.status);
-    try std.testing.expectEqualStrings("no adapter for architecture \"gemma3\"", foreign.verdict.reason);
+    try std.testing.expect(std.mem.startsWith(u8, foreign.verdict.reason, "no adapter for architecture \"gemma3\"; `--against"));
     try std.testing.expect(foreign.verdict.tensor == null);
     // An architecture with an adapter that rejects this directory (the
     // Gemma adapter over the Qwen tensor list).

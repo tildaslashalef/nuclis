@@ -240,6 +240,7 @@ pub const commands = [_]Command{
         .{ .name = "--metadata", .summary = "every metadata key and value" },
         .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
         .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values" },
+        .{ .name = "--against", .value = .text, .summary = "compare with an index name, Hub URL, or file" },
         .{ .name = "--pull", .summary = "with a Hub URL: fetch it when it runs" },
         json,
     } }} },
@@ -271,6 +272,7 @@ pub const commands = [_]Command{
             .{ .name = "--metadata", .summary = "every metadata key and value" },
             .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
             .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values (one row read)" },
+            .{ .name = "--against", .value = .text, .summary = "compare with an index name, Hub URL, or file" },
             .{ .name = "--pull", .summary = "fetch the judged files when they run" },
             .{ .name = "--with", .value = .roles, .summary = "with --pull: also fetch these companions" },
             .{ .name = "--all", .summary = "with --pull: every companion the entry names" },
@@ -883,7 +885,7 @@ test "commands, actions, flags, and fixed values complete from the table" {
     try expectTexts(a, &.{ "agent", "-p", "hi", "--prompt" }, .{}, &.{ "--prompt-file", "--prompt-profile" });
     // Flags are per action.
     try expectTexts(a, &.{ "agent", "ls", "--" }, .{}, &.{"--json"});
-    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--metadata", "--tensors", "--tensor", "--pull", "--with", "--all", "--variants", "--role", "--register", "--profile", "--force", "--json" });
+    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--metadata", "--tensors", "--tensor", "--against", "--pull", "--with", "--all", "--variants", "--role", "--register", "--profile", "--force", "--json" });
     try expectTexts(a, &.{ "completion", "" }, .{}, &.{ "fish", "bash", "zsh" });
     // Free text, numbers, and unknown commands complete to nothing.
     try expectTexts(a, &.{ "agent", "--prompt", "" }, .{}, &.{});

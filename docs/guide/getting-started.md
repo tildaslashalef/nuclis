@@ -291,6 +291,11 @@ The verdict:
 - **not runnable**: names the first tensor or encoding nuclis cannot run,
   the missing adapter, or the adapter's reason.
 
+`--against <ref>` compares the file with another (an index name, a Hub
+URL, or a local file): the keys and tensors only one side has, the values,
+shapes, and block sets that differ, and whether that makes it the same
+model, a configuration of one nuclis runs, or a new family.
+
 `--pull` then fetches the file through `nuclis model pull`, pinned to the
 commit the inspection read, when the verdict is supported or runnable;
 otherwise nothing is downloaded. It takes pull's flags (`--register`,
