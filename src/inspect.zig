@@ -4,6 +4,7 @@ const std = @import("std");
 const inference = @import("inference");
 const kit = @import("ui.zig");
 const compare = @import("inventory.zig");
+const layouts = @import("layout.zig");
 
 pub const EncodingCount = struct {
     id: u32,
@@ -36,6 +37,8 @@ pub const Snapshot = struct {
     tensors: ?[]const TensorRow = null,
     /// `--against`: the comparison with the reference.
     against: ?compare.Against = null,
+    /// `--layout`: the block structure.
+    layout: ?layouts.Layout = null,
 
     /// `inspect --model`: the header, the directory's facts, the encodings,
     /// and the next step.
@@ -84,6 +87,10 @@ pub const Snapshot = struct {
         try kit.table.render(out, ui, arena, 0, &columns, rows);
         if (self.metadata) |m| try renderMetadata(arena, out, ui, m);
         if (self.tensors) |t| try renderTensors(arena, out, ui, t);
+        if (self.layout) |l| {
+            try out.writeByte('\n');
+            try layouts.render(l, arena, out, ui);
+        }
         if (self.against) |x| {
             try out.writeByte('\n');
             try compare.render(x.diff, arena, out, ui, x.label);
@@ -99,6 +106,8 @@ pub const Detail = struct {
     tensor: ?[]const u8 = null,
     /// `--against <ref>`: an index name, a Hub URL, or a local path.
     against: ?[]const u8 = null,
+    /// `--layout`: the block templates and their schedule.
+    layout: bool = false,
 };
 
 pub const Scalar = union(enum) {
@@ -329,6 +338,7 @@ pub const SafetensorsSnapshot = struct {
     dtypes: []const DtypeCount,
     /// The first shard's `__metadata__` (writers repeat it per shard).
     metadata: []const inference.safetensors.Metadata,
+    layout: ?layouts.Layout = null,
     against: ?compare.Against = null,
 
     pub const Shard = struct { file: []const u8, file_bytes: u64, header_bytes: u64, tensors: usize };
@@ -377,6 +387,10 @@ pub const SafetensorsSnapshot = struct {
             .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(d.bytes)}) },
         });
         try kit.table.render(out, ui, arena, 0, &.{ .{ .title = "DTYPE", .truncate = false }, .{ .title = "TENSORS", .alignment = .right }, .{ .title = "ELEMENTS", .alignment = .right, .drop = 1 }, .{ .title = "SIZE", .alignment = .right } }, dtype_rows);
+        if (self.layout) |l| {
+            try out.writeByte('\n');
+            try layouts.render(l, arena, out, ui);
+        }
         if (self.against) |x| {
             try out.writeByte('\n');
             try compare.render(x.diff, arena, out, ui, x.label);

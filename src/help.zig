@@ -946,7 +946,8 @@ fn inspect(p: *Page) !void {
     try title(p, "nuclis inspect", "what an artifact is");
     try heading(p, "Usage:");
     try code(p, "nuclis inspect [--model <name|path|url>] [--metadata] [--tensors]");
-    try code(p, "               [--tensor <name>] [--against <ref>] [--pull] [--json]");
+    try code(p, "               [--tensor <name>] [--against <ref>] [--layout] [--pull]");
+    try code(p, "               [--json]");
 
     try heading(p, "Options:");
     try row(p, "--model <name|path|url>", "the file to read; default engine.model; a");
@@ -960,6 +961,8 @@ fn inspect(p: *Page) !void {
     try more(p, "values (decoded from any encoding nuclis reads)");
     try row(p, "--against <ref>", "compare with an index name, a Hub URL, or a file:");
     try more(p, "keys, tensors, values, shapes, and which kind of new");
+    try row(p, "--layout", "the block templates, their schedule, and each");
+    try more(p, "dimension named by the metadata it equals");
     try row(p, "--pull", "with a Hub URL: then pull it, at the commit read,");
     try more(p, "when the verdict is supported or runnable");
     try row(p, "--json", "the same facts as JSON");
@@ -1016,7 +1019,8 @@ fn model(p: *Page) !void {
     try code(p, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(p, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(p, "nuclis model inspect <name|hub-url> [--metadata] [--tensors] [--tensor <name>]");
-    try code(p, "                     [--against <ref>] [--pull [pull's flags]] [--json]");
+    try code(p, "                     [--against <ref>] [--layout] [--pull [pull's flags]]");
+    try code(p, "                     [--json]");
     try code(p, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>]");
     try code(p, "                     [same flags]");
     try code(p, "nuclis model adopt <path> [--force] [--json]");
@@ -1056,10 +1060,8 @@ fn model(p: *Page) !void {
     try more(p, "when several; its support files come with it");
     try row(p, "--revision <rev>", "a branch, tag, or commit; default main");
     try row(p, "--role <r>", "main, mmproj, draft, or imatrix; default by content");
-    try row(p, "--metadata, --tensors", "inspect: every key and value; every tensor");
-    try row(p, "--against <ref>", "inspect: what differs from an index name, URL, file");
-    try row(p, "--tensor <name>", "inspect: one tensor and its first values (one row)");
-    try row(p, "--pull", "inspect: then pull it, at that commit, if it runs");
+    try row(p, "inspect's own", "--metadata, --tensors, --tensor, --against, --layout,");
+    try more(p, "--pull: what `nuclis inspect --help` says they show");
     try row(p, "--register <name>", "once verified, write the pull as a registry entry");
     try more(p, "(repo, file, commit); a companion fills the same entry");
     try row(p, "--profile <p>", "with --register: force qwen38, gemma4,");

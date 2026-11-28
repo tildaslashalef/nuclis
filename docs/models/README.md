@@ -81,9 +81,9 @@ take is a second copy of the schedule.
   [gemma4.md § Forward pass](gemma4.md#forward-pass)
   does: notation, the forward pass in equations, norms (raw or shifted
   weights?), RoPE pairing and factors, attention scale, activation, soft
-  caps, tied heads, layer patterns, and where each fact came from (the
-  file, the model card, the paper, the authors' code read as the
-  definition of the architecture).
+  caps, tied heads, layer patterns (`inspect --layout` prints them from
+  the tensors), and where each fact came from (the file, the model card,
+  the paper, the authors' code read as the definition of the architecture).
 
 Watch for format capacities disguised as model facts: Gemma's 48-element
 per-layer arrays exceeded the parser's retained-array bound (16, a

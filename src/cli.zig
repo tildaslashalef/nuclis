@@ -5,6 +5,7 @@ const inference = @import("inference");
 const paths = @import("paths.zig");
 const inspection = @import("inspect.zig");
 const compare = @import("inventory.zig");
+const layouts = @import("layout.zig");
 const validation = @import("validate.zig");
 const generate = @import("generate.zig");
 const bench = @import("bench.zig");
@@ -283,6 +284,9 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
             options.detail.against = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--layout")) {
+            if (options.detail.layout) return error.DuplicateOption;
+            options.detail.layout = true;
         } else if (command == .inspect and std.mem.eql(u8, args[i], "--pull")) {
             if (options.inspect_pull) return error.DuplicateOption;
             options.inspect_pull = true;
@@ -618,6 +622,11 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
             options.detail.against = args[i];
+            continue;
+        }
+        if (options.model_action == .inspect and std.mem.eql(u8, flag, "--layout")) {
+            if (options.detail.layout) return error.DuplicateOption;
+            options.detail.layout = true;
             continue;
         }
         if (options.model_action == .inspect and std.mem.eql(u8, flag, "--pull")) {
@@ -1045,10 +1054,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     break :blk {};
                 }
                 var result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
-                if (options.detail.against) |text| {
+                if (options.detail.against != null or options.detail.layout) {
                     const a = arena_state.allocator();
-                    const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
-                    result.against = .{ .label = there.label, .diff = try compare.diff(a, try model.localInventory(a, alloc, io, path, diag), there.inventory) };
+                    const here = try model.localInventory(a, alloc, io, path, diag);
+                    if (options.detail.layout) result.layout = try layouts.layout(a, here);
+                    if (options.detail.against) |text| {
+                        const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
+                        result.against = .{ .label = there.label, .diff = try compare.diff(a, here, there.inventory) };
+                    }
                 }
                 try result.render(arena_state.allocator(), out, options.json, ui);
                 break :blk {};
@@ -1082,10 +1095,14 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 defer arena_state.deinit();
                 if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document, try readDirectory(arena_state.allocator(), io, path, document));
                 if (options.detail.tensors) result.tensors = try inspection.tensorRows(arena_state.allocator(), document);
-                if (options.detail.against) |text| {
+                if (options.detail.against != null or options.detail.layout) {
                     const a = arena_state.allocator();
-                    const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
-                    result.against = .{ .label = there.label, .diff = try compare.diff(a, try compare.fromGguf(a, document), there.inventory) };
+                    const here = try compare.fromGguf(a, document);
+                    if (options.detail.layout) result.layout = try layouts.layout(a, here);
+                    if (options.detail.against) |text| {
+                        const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
+                        result.against = .{ .label = there.label, .diff = try compare.diff(a, here, there.inventory) };
+                    }
                 }
                 try result.render(arena_state.allocator(), out, options.json, ui);
             }
@@ -1746,6 +1763,7 @@ test {
     _ = discover;
     _ = @import("interrupt.zig");
     _ = @import("inventory.zig");
+    _ = @import("layout.zig");
     _ = @import("timing.zig");
     _ = @import("web/root.zig");
     _ = completion;

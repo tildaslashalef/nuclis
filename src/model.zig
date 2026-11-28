@@ -33,6 +33,7 @@ const audio_catalog = @import("audio/catalog.zig");
 const interrupt = @import("interrupt.zig");
 const inspection = @import("inspect.zig");
 const compare = @import("inventory.zig");
+const layouts = @import("layout.zig");
 const kit = @import("ui.zig");
 const errors = @import("errors.zig");
 const Allocator = std.mem.Allocator;
@@ -2652,10 +2653,10 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     request.filename = file.name;
     if (hf.format(file.name) == .safetensors) {
         if (detail.metadata or detail.tensors or detail.tensor != null) {
-            diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; a safetensors header lists its tensors' dtypes", .{file.name});
+            diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; a safetensors header lists its tensors' dtypes, and --layout its structure", .{file.name});
             return error.UnsupportedFormat;
         }
-        var report = try inspectSafetensors(arena, gpa, client, request, selected, against, .{
+        var report = try inspectSafetensors(arena, gpa, client, request, selected, against, detail.layout, .{
             .name = null,
             .repo = request.repo_id,
             .file = try arena.dupe(u8, file.name),
@@ -2761,13 +2762,17 @@ const max_remote_config_bytes = 1024 * 1024;
 
 /// Reads every shard's header of a selected safetensors set, and the
 /// `config.json` in its folder, through the Hub's range reads.
-fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, against: ?Reference, id: Identity, diag: *config.Diagnostic) !InspectReport {
+fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, against: ?Reference, layout: bool, id: Identity, diag: *config.Diagnostic) !InspectReport {
     const set = try readSafetensorsSet(arena, gpa, client, request, selected, id.file, diag);
     var report = finish(id, set.bytes_read, set.requests, null, .{ .status = .not_runnable, .reason = "" });
     report.safetensors = try inspection.safetensorsHeaders(arena, set.shards, try arena.print("{s}/{s}", .{ id.repo, id.file }), id.file);
     report.config = set.config;
     report.config_omitted = set.config_omitted;
-    if (against) |there| report.safetensors.?.against = .{ .label = there.label, .diff = try compare.diff(arena, try set.inventory(arena), there.inventory) };
+    if (against != null or layout) {
+        const here = try set.inventory(arena);
+        if (layout) report.safetensors.?.layout = try layouts.layout(arena, here);
+        if (against) |there| report.safetensors.?.against = .{ .label = there.label, .diff = try compare.diff(arena, here, there.inventory) };
+    }
     return report;
 }
 
@@ -3135,7 +3140,11 @@ fn inspectDirectory(arena: Allocator, gpa: Allocator, reader: anytype, id: Ident
     if (snapshot.name) |n| snapshot.name = try arena.dupe(u8, n);
     if (detail.metadata) snapshot.metadata = try inspection.metadataRows(arena, doc, head.items);
     if (detail.tensors) snapshot.tensors = try inspection.tensorRows(arena, doc);
-    if (against) |there| snapshot.against = .{ .label = there.label, .diff = try compare.diff(arena, try compare.fromGguf(arena, doc), there.inventory) };
+    if (against != null or detail.layout) {
+        const here = try compare.fromGguf(arena, doc);
+        if (detail.layout) snapshot.layout = try layouts.layout(arena, here);
+        if (against) |there| snapshot.against = .{ .label = there.label, .diff = try compare.diff(arena, here, there.inventory) };
+    }
     var report = finish(id, head.items.len, requests, snapshot, try judge(arena, gpa, &doc, id));
     if (detail.tensor) |name| {
         const tensor = inspection.findTensor(doc, name) orelse {

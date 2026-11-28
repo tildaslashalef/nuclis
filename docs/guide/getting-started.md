@@ -296,6 +296,13 @@ URL, or a local file): the keys and tensors only one side has, the values,
 shapes, and block sets that differ, and whether that makes it the same
 model, a configuration of one nuclis runs, or a new family.
 
+`--layout` prints the block structure from the tensors alone: each kind
+of block (its tensors, shapes, and encodings, each dimension named by the
+metadata or `config.json` value it equals), and their schedule, such as
+`(A A A B) × 16 · C` for three delta-net blocks to one attention block,
+then the draft head. Shapes are as the file stores them: a GGUF's
+innermost dimension first, a safetensors file's outermost first.
+
 `--pull` then fetches the file through `nuclis model pull`, pinned to the
 commit the inspection read, when the verdict is supported or runnable;
 otherwise nothing is downloaded. It takes pull's flags (`--register`,
