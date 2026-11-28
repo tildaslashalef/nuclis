@@ -19,6 +19,9 @@ pub const Inventory = struct {
     architecture: ?[]const u8,
     keys: []const Key,
     tensors: []const Tensor,
+    /// Shapes list the outermost dimension first (safetensors); GGUF lists
+    /// the innermost first.
+    outermost_first: bool = false,
 };
 
 /// The most elements of a retained array a value's text spells out.
@@ -50,7 +53,7 @@ pub fn fromSafetensors(arena: std.mem.Allocator, shards: []const *const inferenc
         k.* = .{ .name = try arena.dupe(u8, c.key), .value = try arena.dupe(u8, c.value) };
         if (std.mem.eql(u8, c.key, "model_type")) architecture = k.value;
     }
-    return .{ .architecture = architecture, .keys = keys, .tensors = tensors.items };
+    return .{ .architecture = architecture, .keys = keys, .tensors = tensors.items, .outermost_first = true };
 }
 
 fn valueText(arena: std.mem.Allocator, kind: inference.gguf.Type, value: inference.gguf.Value) ![]const u8 {

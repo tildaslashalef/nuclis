@@ -5,7 +5,6 @@ const inference = @import("inference");
 const paths = @import("paths.zig");
 const inspection = @import("inspect.zig");
 const compare = @import("inventory.zig");
-const layouts = @import("layout.zig");
 const validation = @import("validate.zig");
 const generate = @import("generate.zig");
 const bench = @import("bench.zig");
@@ -284,6 +283,11 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
             options.detail.against = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--context")) {
+            if (options.detail.context != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
+            options.detail.context = args[i];
         } else if (command == .inspect and std.mem.eql(u8, args[i], "--layout")) {
             if (options.detail.layout) return error.DuplicateOption;
             options.detail.layout = true;
@@ -622,6 +626,13 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
             options.detail.against = args[i];
+            continue;
+        }
+        if (options.model_action == .inspect and std.mem.eql(u8, flag, "--context")) {
+            if (options.detail.context != null) return error.DuplicateOption;
+            i += 1;
+            if (i == args.len or args[i].len == 0 or std.mem.startsWith(u8, args[i], "--")) return error.MissingOptionValue;
+            options.detail.context = args[i];
             continue;
         }
         if (options.model_action == .inspect and std.mem.eql(u8, flag, "--layout")) {
@@ -1054,14 +1065,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                     break :blk {};
                 }
                 var result = try inspection.safetensorsSnapshot(arena_state.allocator(), &checkpoint, path);
-                if (options.detail.against != null or options.detail.layout) {
+                if (model.wantsExtras(options.detail)) {
                     const a = arena_state.allocator();
-                    const here = try model.localInventory(a, alloc, io, path, diag);
-                    if (options.detail.layout) result.layout = try layouts.layout(a, here);
-                    if (options.detail.against) |text| {
-                        const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
-                        result.against = .{ .label = there.label, .diff = try compare.diff(a, here, there.inventory) };
-                    }
+                    const there = if (options.detail.against) |text| try model.loadReference(a, alloc, io, environ, root, text, diag) else null;
+                    const x = try model.extrasFor(a, try model.localInventory(a, alloc, io, path, diag), result.tensor_bytes, options.detail, there, diag);
+                    result.layout = x.layout;
+                    result.memory = x.memory;
+                    result.against = x.against;
                 }
                 try result.render(arena_state.allocator(), out, options.json, ui);
                 break :blk {};
@@ -1095,14 +1105,13 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 defer arena_state.deinit();
                 if (options.detail.metadata) result.metadata = try inspection.metadataRows(arena_state.allocator(), document, try readDirectory(arena_state.allocator(), io, path, document));
                 if (options.detail.tensors) result.tensors = try inspection.tensorRows(arena_state.allocator(), document);
-                if (options.detail.against != null or options.detail.layout) {
+                if (model.wantsExtras(options.detail)) {
                     const a = arena_state.allocator();
-                    const here = try compare.fromGguf(a, document);
-                    if (options.detail.layout) result.layout = try layouts.layout(a, here);
-                    if (options.detail.against) |text| {
-                        const there = try model.loadReference(a, alloc, io, environ, root, text, diag);
-                        result.against = .{ .label = there.label, .diff = try compare.diff(a, here, there.inventory) };
-                    }
+                    const there = if (options.detail.against) |text| try model.loadReference(a, alloc, io, environ, root, text, diag) else null;
+                    const x = try model.extrasFor(a, try compare.fromGguf(a, document), result.tensor_bytes, options.detail, there, diag);
+                    result.layout = x.layout;
+                    result.memory = x.memory;
+                    result.against = x.against;
                 }
                 try result.render(arena_state.allocator(), out, options.json, ui);
             }
@@ -1764,6 +1773,7 @@ test {
     _ = @import("interrupt.zig");
     _ = @import("inventory.zig");
     _ = @import("layout.zig");
+    _ = @import("memory.zig");
     _ = @import("timing.zig");
     _ = @import("web/root.zig");
     _ = completion;

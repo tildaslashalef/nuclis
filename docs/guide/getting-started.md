@@ -303,6 +303,13 @@ metadata or `config.json` value it equals), and their schedule, such as
 then the draft head. Shapes are as the file stores them: a GGUF's
 innermost dimension first, a safetensors file's outermost first.
 
+`--context <n,…>` estimates the memory at those context lengths (`max` is
+the declared one): the weights, plus each block's own K and V widths per
+token at f16 and at q8_0, against this machine's memory. A block that
+shares another's KV adds nothing; recurrent state is constant and not
+counted; a declared sliding window is not applied, so the cache is then an
+upper bound. Activations and scratch buffers are not included.
+
 `--pull` then fetches the file through `nuclis model pull`, pinned to the
 commit the inspection read, when the verdict is supported or runnable;
 otherwise nothing is downloaded. It takes pull's flags (`--register`,

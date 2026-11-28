@@ -231,8 +231,8 @@
     "inspect": {
       "usage": [
         "nuclis inspect [--model <name|path|url>] [--metadata] [--tensors]",
-        "[--tensor <name>] [--against <ref>] [--layout] [--pull]",
-        "[--json]"
+        "[--tensor <name>] [--against <ref>] [--layout]",
+        "[--context <n,…>] [--pull] [--json]"
       ],
       "flags": [
         "--model",
@@ -241,6 +241,7 @@
         "--tensor",
         "--against",
         "--layout",
+        "--context",
         "--pull",
         "--json"
       ]
@@ -263,8 +264,8 @@
         "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]",
         "[--register <name> [--profile <p>]] [--force] [--json]",
         "nuclis model inspect <name|hub-url> [--metadata] [--tensors] [--tensor <name>]",
-        "[--against <ref>] [--layout] [--pull [pull's flags]]",
-        "[--json]",
+        "[--against <ref>] [--layout] [--context <n,…>]",
+        "[--pull [pull's flags]] [--json]",
         "nuclis model inspect <owner/repo> --file <name> [--revision <rev>]",
         "[same flags]",
         "nuclis model adopt <path> [--force] [--json]",
@@ -291,6 +292,7 @@
         "--tensor",
         "--against",
         "--layout",
+        "--context",
         "--pull"
       ]
     },

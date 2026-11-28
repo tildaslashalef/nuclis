@@ -5,6 +5,7 @@ const inference = @import("inference");
 const kit = @import("ui.zig");
 const compare = @import("inventory.zig");
 const layouts = @import("layout.zig");
+const memories = @import("memory.zig");
 
 pub const EncodingCount = struct {
     id: u32,
@@ -39,6 +40,8 @@ pub const Snapshot = struct {
     against: ?compare.Against = null,
     /// `--layout`: the block structure.
     layout: ?layouts.Layout = null,
+    /// `--context`: weights and cache at each context length.
+    memory: ?memories.Memory = null,
 
     /// `inspect --model`: the header, the directory's facts, the encodings,
     /// and the next step.
@@ -87,14 +90,7 @@ pub const Snapshot = struct {
         try kit.table.render(out, ui, arena, 0, &columns, rows);
         if (self.metadata) |m| try renderMetadata(arena, out, ui, m);
         if (self.tensors) |t| try renderTensors(arena, out, ui, t);
-        if (self.layout) |l| {
-            try out.writeByte('\n');
-            try layouts.render(l, arena, out, ui);
-        }
-        if (self.against) |x| {
-            try out.writeByte('\n');
-            try compare.render(x.diff, arena, out, ui, x.label);
-        }
+        try extras(arena, out, ui, self.layout, self.memory, self.against);
     }
 };
 
@@ -108,7 +104,25 @@ pub const Detail = struct {
     against: ?[]const u8 = null,
     /// `--layout`: the block templates and their schedule.
     layout: bool = false,
+    /// `--context <n,…|max>`: the memory at those context lengths.
+    context: ?[]const u8 = null,
 };
+
+/// What `--layout`, `--context`, and `--against` add, in that order.
+fn extras(arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, layout: ?layouts.Layout, memory: ?memories.Memory, against: ?compare.Against) !void {
+    if (layout) |l| {
+        try out.writeByte('\n');
+        try layouts.render(l, arena, out, ui);
+    }
+    if (memory) |m| {
+        try out.writeByte('\n');
+        try memories.render(m, arena, out, ui);
+    }
+    if (against) |x| {
+        try out.writeByte('\n');
+        try compare.render(x.diff, arena, out, ui, x.label);
+    }
+}
 
 pub const Scalar = union(enum) {
     unsigned: u64,
@@ -339,6 +353,7 @@ pub const SafetensorsSnapshot = struct {
     /// The first shard's `__metadata__` (writers repeat it per shard).
     metadata: []const inference.safetensors.Metadata,
     layout: ?layouts.Layout = null,
+    memory: ?memories.Memory = null,
     against: ?compare.Against = null,
 
     pub const Shard = struct { file: []const u8, file_bytes: u64, header_bytes: u64, tensors: usize };
@@ -387,14 +402,7 @@ pub const SafetensorsSnapshot = struct {
             .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(d.bytes)}) },
         });
         try kit.table.render(out, ui, arena, 0, &.{ .{ .title = "DTYPE", .truncate = false }, .{ .title = "TENSORS", .alignment = .right }, .{ .title = "ELEMENTS", .alignment = .right, .drop = 1 }, .{ .title = "SIZE", .alignment = .right } }, dtype_rows);
-        if (self.layout) |l| {
-            try out.writeByte('\n');
-            try layouts.render(l, arena, out, ui);
-        }
-        if (self.against) |x| {
-            try out.writeByte('\n');
-            try compare.render(x.diff, arena, out, ui, x.label);
-        }
+        try extras(arena, out, ui, self.layout, self.memory, self.against);
     }
 };
 
