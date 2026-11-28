@@ -1064,16 +1064,22 @@ test "files: a model that fails to open fails its request, and the next one too"
     defer budget.deinit();
     f.service.slot.budget = &budget;
     var worker = try io.concurrent(gpu.Executor.run, .{ &f.executor, io });
-    defer {
+    var joined = false;
+    defer if (!joined) {
         f.executor.stop(io);
         worker.await(io);
-    }
+    };
     var arena_state: std.heap.ArenaAllocator = .init(std.testing.allocator);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
     const wav = try testWav(arena, 1600);
     try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{}, wav), test_type, null, .{}), .internal_server_error, "model_failed", "model");
     try expectError(f.service.files.answer(arena, io, try testForm(arena, &.{.{ "stream", "true" }}, wav), test_type, null, .{}), .internal_server_error, "model_failed", "model");
+    // A request wakes before its item's step returns and clears `scheduled`:
+    // the worker is joined before the files' state is read.
+    f.executor.stop(io);
+    worker.await(io);
+    joined = true;
     try std.testing.expectEqual(@as(u64, 2), f.service.files.requests);
     try std.testing.expect(!f.service.files.scheduled and f.service.files.waiting == 0);
     try std.testing.expectEqual(@as(u64, 0), budget.resident(io));
