@@ -231,13 +231,14 @@
     "inspect": {
       "usage": [
         "nuclis inspect [--model <name|path|url>] [--metadata] [--tensors]",
-        "[--tensor <name>] [--json]"
+        "[--tensor <name>] [--pull] [--json]"
       ],
       "flags": [
         "--model",
         "--metadata",
         "--tensors",
         "--tensor",
+        "--pull",
         "--json"
       ]
     },
@@ -258,10 +259,11 @@
         "nuclis model pull --catalogue [--extra] [--force] [--json]",
         "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]",
         "[--register <name> [--profile <p>]] [--force] [--json]",
-        "nuclis model inspect <name> [--metadata] [--tensors] [--tensor <name>]",
-        "[--json]",
+        "nuclis model inspect <name|hub-url> [--metadata] [--tensors]",
+        "[--tensor <name>] [--pull [pull's flags]] [--json]",
         "nuclis model inspect <owner/repo> --file <name> [--revision <rev>]",
-        "[--metadata] [--tensors] [--tensor <name>] [--json]",
+        "[--metadata] [--tensors] [--tensor <name>]",
+        "[--pull [pull's flags]] [--json]",
         "nuclis model adopt <path> [--force] [--json]",
         "nuclis model rm <name> [--with mmproj,draft | --all] [--json]"
       ],
@@ -279,6 +281,7 @@
         "--metadata",
         "--tensors",
         "--tensor",
+        "--pull",
         "--register",
         "--profile",
         "--force",

@@ -291,6 +291,11 @@ The verdict:
 - **not runnable**: names the first tensor or encoding nuclis cannot run,
   the missing adapter, or the adapter's reason.
 
+`--pull` then fetches the file through `nuclis model pull`, pinned to the
+commit the inspection read, when the verdict is supported or runnable;
+otherwise nothing is downloaded. It takes pull's flags (`--register`,
+`--with`, `--force`).
+
 `--metadata`, `--tensors`, and `--tensor <name>` add every metadata key,
 every tensor's encoding and shape, or one tensor's first values (one row
 read from the Hub), as `nuclis inspect` shows them for a local file.

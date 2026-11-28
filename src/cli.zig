@@ -86,6 +86,9 @@ pub const Options = struct {
     /// `inspect` and `model inspect`: `--metadata`, `--tensors`, and
     /// `--tensor <name>` (one tensor and its first values).
     detail: inspection.Detail = .{},
+    /// `--pull` on `model inspect` (or `inspect` of a Hub URL): fetch the
+    /// judged files when the verdict says they run.
+    inspect_pull: bool = false,
     json: bool = false,
 };
 
@@ -274,6 +277,9 @@ fn parseAt(args: []const []const u8, at: *usize) !Options {
             i += 1;
             if (i == args.len or args[i].len == 0) return error.MissingOptionValue;
             options.detail.tensor = args[i];
+        } else if (command == .inspect and std.mem.eql(u8, args[i], "--pull")) {
+            if (options.inspect_pull) return error.DuplicateOption;
+            options.inspect_pull = true;
         } else if (command == .inspect and std.mem.eql(u8, args[i], "--metadata")) {
             if (options.detail.metadata) return error.DuplicateOption;
             options.detail.metadata = true;
@@ -601,6 +607,11 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             set.* = true;
             continue;
         }
+        if (options.model_action == .inspect and std.mem.eql(u8, flag, "--pull")) {
+            if (options.inspect_pull) return error.DuplicateOption;
+            options.inspect_pull = true;
+            continue;
+        }
         if (options.model_action == .inspect and std.mem.eql(u8, flag, "--tensor")) {
             if (options.detail.tensor != null) return error.DuplicateOption;
             i += 1;
@@ -614,7 +625,8 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
             p.force = true;
             continue;
         }
-        const pulls = options.model_action == .pull;
+        // `inspect --pull` takes pull's flags; without `--pull` they conflict.
+        const pulls = options.model_action == .pull or options.model_action == .inspect;
         // `rm` takes the companion choice and nothing else of pull's.
         const removes = options.model_action == .rm;
         // After a name, `--catalogue` is a second subject, not a flag.
@@ -692,6 +704,7 @@ fn parseModelArgs(args: []const []const u8, at: *usize) !Options {
     if (p.variants and !p.all) return error.ConflictingOptions;
     if (options.ls.all and !options.ls.available) return error.ConflictingOptions;
     if (options.model_action == .rm and p.all and p.with.count() != 0) return error.ConflictingOptions;
+    if (options.model_action == .inspect and !options.inspect_pull and (p.force or p.all or p.variants or p.with.count() != 0 or p.role != null or p.register != null)) return error.ConflictingOptions;
     return options;
 }
 
@@ -745,7 +758,12 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
                 return model.ls(alloc, io, dir, if (loaded) |l| l.config.models else .{}, if (loaded) |l| l.config.engine.model else null, options.ls, options.json, out, ui);
             },
             .adopt => return model.adopt(alloc, io, dir, options.pull.repo, options.pull.force, options.json, out, ui, diag),
-            .inspect => return model.inspect(alloc, io, environ, options.pull, options.detail, options.json, out, ui, diag),
+            .inspect => {
+                var judged = try model.inspect(alloc, io, environ, options.pull, options.detail, options.json, out, ui, diag);
+                defer judged.deinit();
+                if (options.inspect_pull) try model.pullJudged(alloc, io, environ, dir, options.pull, config_path, judged, options.json, out, ui, diag);
+                return;
+            },
             // The registry decides which files other entries still use, so
             // a file that fails to load stops the removal.
             .rm => {
@@ -914,8 +932,16 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         return;
     }
     // A Hub URL is read remotely, as `model inspect` reads it.
-    if (options.command == .inspect) if (options.model) |m| if (model.isHubReference(m))
-        return model.inspect(alloc, io, environ, .{ .repo = m }, options.detail, options.json, out, ui, diag);
+    if (options.command == .inspect) if (options.model) |m| if (model.isHubReference(m)) {
+        var judged = try model.inspect(alloc, io, environ, .{ .repo = m }, options.detail, options.json, out, ui, diag);
+        defer judged.deinit();
+        if (options.inspect_pull) try model.pullJudged(alloc, io, environ, root orelse return error.MissingHome, .{ .repo = m }, config_path, judged, options.json, out, ui, diag);
+        return;
+    };
+    if (options.inspect_pull) {
+        diag.set("--pull fetches what a remote inspection judged: give a Hub URL (`--model https://huggingface.co/…`), or use `nuclis model inspect <name|owner/repo> --pull`", .{});
+        return error.ConflictingOptions;
+    }
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const wanted = options.model orelse loaded.config.engine.model;
@@ -1556,7 +1582,7 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "pull", "HauhauCS/Gemma4", "--file", "g.gguf", "--profile", "gemma4" }));
     try std.testing.expectError(error.UnknownPromptProfile, parseArgs(&.{ "model", "pull", "a/b", "--register", "x", "--profile", "llama" }));
     try std.testing.expectError(error.MissingOptionValue, parseArgs(&.{ "model", "pull", "a/b", "--register", "--json" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--register", "x" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "inspect", "a/b", "--register", "x" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "main" }));
     try std.testing.expectError(error.UnknownRole, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mmproj,eagle" }));
     try std.testing.expectError(error.DuplicateOption, parseArgs(&.{ "model", "pull", "qwen3.8-27b", "--with", "mtp", "--with", "mmproj" }));
@@ -1625,10 +1651,10 @@ test "model parses its action, the positional repository, and its own flags only
     try std.testing.expectEqualStrings("qwen3.8-27b", (try parseArgs(&.{ "model", "inspect", "qwen3.8-27b" })).pull.repo);
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "inspect" }));
     try std.testing.expectError(error.MissingRepository, parseArgs(&.{ "model", "inspect", "--file", "x.gguf" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--force" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--all" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--with", "mtp" }));
-    try std.testing.expectError(error.UnknownOption, parseArgs(&.{ "model", "inspect", "a/b", "--role", "mtp" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "inspect", "a/b", "--force" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "inspect", "a/b", "--all" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "inspect", "a/b", "--with", "mtp" }));
+    try std.testing.expectError(error.ConflictingOptions, parseArgs(&.{ "model", "inspect", "a/b", "--role", "mtp" }));
 }
 
 test "model ls runs against NUCLIS_HOME and needs no configuration file" {
@@ -1856,4 +1882,18 @@ test "agent export writes a session of this workspace as markdown, found by id p
     try run(alloc, io, &environ, try parseArgs(&.{ "agent", "export", "feedc0de" }), &out.writer, &diag);
     try tmp.dir.access(io, "agent/exports/20261004T100000Z_feedc0de.md", .{});
     try std.testing.expectError(error.SessionNotFound, run(alloc, io, &environ, try parseArgs(&.{ "agent", "export", "zz" }), &out.writer, &diag));
+}
+
+test "inspect --pull takes pull's flags; without --pull they conflict" {
+    var at: usize = 0;
+    const pulled = try parseModelArgs(&.{ "inspect", "o/r", "--file", "m.gguf", "--pull", "--register", "mine", "--force" }, &at);
+    try std.testing.expect(pulled.inspect_pull and pulled.pull.force);
+    try std.testing.expectEqualStrings("mine", pulled.pull.register.?);
+    const index = try parseModelArgs(&.{ "inspect", "qwen3.8-27b", "--with", "draft", "--pull" }, &at);
+    try std.testing.expect(index.inspect_pull and index.pull.with.count() == 1);
+    try std.testing.expectError(error.ConflictingOptions, parseModelArgs(&.{ "inspect", "o/r", "--register", "mine" }, &at));
+    try std.testing.expectError(error.ConflictingOptions, parseModelArgs(&.{ "inspect", "qwen3.8-27b", "--all" }, &at));
+    try std.testing.expectError(error.DuplicateOption, parseModelArgs(&.{ "inspect", "o/r", "--pull", "--pull" }, &at));
+    const url = try parseArgs(&.{ "inspect", "--model", "https://hf.co/o/r", "--pull" });
+    try std.testing.expect(url.inspect_pull);
 }

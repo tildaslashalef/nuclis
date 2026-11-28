@@ -240,6 +240,7 @@ pub const commands = [_]Command{
         .{ .name = "--metadata", .summary = "every metadata key and value" },
         .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
         .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values" },
+        .{ .name = "--pull", .summary = "with a Hub URL: fetch it when it runs" },
         json,
     } }} },
     .{ .name = "validate", .summary = "whether a file binds to its adapter", .actions = &.{.{ .flags = &.{ model_flag, json } }} },
@@ -270,6 +271,14 @@ pub const commands = [_]Command{
             .{ .name = "--metadata", .summary = "every metadata key and value" },
             .{ .name = "--tensors", .summary = "every tensor: encoding, shape, offset" },
             .{ .name = "--tensor", .value = .text, .summary = "one tensor and its first values (one row read)" },
+            .{ .name = "--pull", .summary = "fetch the judged files when they run" },
+            .{ .name = "--with", .value = .roles, .summary = "with --pull: also fetch these companions" },
+            .{ .name = "--all", .summary = "with --pull: every companion the entry names" },
+            .{ .name = "--variants", .summary = "with --pull --all: every draft variant" },
+            .{ .name = "--role", .value = .{ .choice = names(model.Role) }, .summary = "with --pull: the file's role" },
+            .{ .name = "--register", .value = .text, .summary = "with --pull: record it as a registry entry" },
+            .{ .name = "--profile", .value = .{ .choice = names(config.Profile) }, .summary = "with --register: force a profile" },
+            .{ .name = "--force", .summary = "with --pull: replace a file with other content" },
             json,
         } },
         .{ .name = "rm", .summary = "delete a model's files", .positionals = &.{.present}, .flags = &.{
@@ -874,7 +883,7 @@ test "commands, actions, flags, and fixed values complete from the table" {
     try expectTexts(a, &.{ "agent", "-p", "hi", "--prompt" }, .{}, &.{ "--prompt-file", "--prompt-profile" });
     // Flags are per action.
     try expectTexts(a, &.{ "agent", "ls", "--" }, .{}, &.{"--json"});
-    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--metadata", "--tensors", "--tensor", "--json" });
+    try expectTexts(a, &.{ "model", "inspect", "x", "--" }, .{}, &.{ "--file", "--revision", "--metadata", "--tensors", "--tensor", "--pull", "--with", "--all", "--variants", "--role", "--register", "--profile", "--force", "--json" });
     try expectTexts(a, &.{ "completion", "" }, .{}, &.{ "fish", "bash", "zsh" });
     // Free text, numbers, and unknown commands complete to nothing.
     try expectTexts(a, &.{ "agent", "--prompt", "" }, .{}, &.{});
@@ -970,6 +979,10 @@ test "every flag in the table is one the parser takes for that command" {
         if (std.mem.eql(u8, f.name, "--profile") and std.mem.eql(u8, action.name, "pull")) try args.appendSlice(a, &.{ "--register", "x" });
         if (std.mem.eql(u8, f.name, "--variants") and std.mem.eql(u8, action.name, "pull")) try args.append(a, "--all");
         if (std.mem.eql(u8, f.name, "--all") and std.mem.eql(u8, action.name, "ls")) try args.append(a, "--available");
+        // `model inspect` takes pull's flags only with `--pull`.
+        if (std.mem.eql(u8, action.name, "inspect") and contains(&.{ "--with", "--all", "--variants", "--role", "--register", "--profile", "--force" }, f.name)) try args.append(a, "--pull");
+        if (std.mem.eql(u8, f.name, "--profile") and std.mem.eql(u8, action.name, "inspect")) try args.appendSlice(a, &.{ "--register", "x" });
+        if (std.mem.eql(u8, f.name, "--variants") and std.mem.eql(u8, action.name, "inspect")) try args.append(a, "--all");
         _ = cli.parseArgs(args.items) catch |err| {
             std.debug.print("{s}: {s}\n", .{ try std.mem.join(a, " ", args.items), @errorName(err) });
             return err;

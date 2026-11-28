@@ -2526,7 +2526,68 @@ const Identity = struct {
 /// Hub and needs `--file` when it holds several GGUFs), then parses the
 /// directory from the head of the file and prints what `inspect` prints
 /// for a local file, ending with the verdict.
-pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, given: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
+/// What `inspect` judged, for `--pull`: the verdict, and the file and the
+/// commit it read, so a pull fetches exactly the bytes judged. Strings
+/// are owned by the caller's `gpa` (`deinit`).
+pub const Judged = struct {
+    status: @FieldType(Verdict, "status"),
+    /// The index name when the subject was one (the pull keeps its pins).
+    name: ?[]const u8,
+    repo: []const u8,
+    file: []const u8,
+    commit: []const u8,
+    reason: []const u8,
+    storage: std.heap.ArenaAllocator,
+    pub fn deinit(self: *Judged) void {
+        self.storage.deinit();
+    }
+};
+
+fn judgedOf(gpa: Allocator, report: InspectReport) !Judged {
+    var storage = std.heap.ArenaAllocator.init(gpa);
+    errdefer storage.deinit();
+    const a = storage.allocator();
+    return .{
+        .status = report.verdict.status,
+        .name = if (report.name) |n| try a.dupe(u8, n) else null,
+        .repo = try a.dupe(u8, report.repo),
+        .file = try a.dupe(u8, report.file),
+        .commit = try a.dupe(u8, report.revision),
+        .reason = try a.dupe(u8, report.verdict.reason),
+        .storage = storage,
+    };
+}
+
+/// `inspect --pull`: the judged files through `pull`, pinned to the commit
+/// the inspection read (an index name keeps its own pins and companions);
+/// refused, with nothing downloaded, unless the verdict says they run.
+/// `given` carries pull's flags (`--register`, `--with`, `--force`); `seen`
+/// stays the caller's.
+pub fn pullJudged(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, root: []const u8, given: PullOptions, config_path: ?[]const u8, seen: Judged, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
+    if (seen.status == .not_runnable) {
+        diag.set("{s}: not pulled, the verdict is not runnable ({s})", .{ seen.file, seen.reason });
+        return error.NotRunnable;
+    }
+    if (hf.format(seen.file) == .safetensors and seen.name == null) {
+        diag.set("{s}: not pulled; `--pull` fetches what nuclis runs, and only the index's safetensors entries run", .{seen.file});
+        return error.NotRunnable;
+    }
+    var options = given;
+    options.config_path = config_path;
+    if (seen.name) |name| {
+        options.repo = name;
+        options.file = null;
+        options.revision = null;
+    } else {
+        options.repo = seen.repo;
+        options.file = seen.file;
+        options.revision = seen.commit;
+    }
+    if (!json) try out.writeByte('\n');
+    return pull(gpa, io, environ, root, options, json, out, ui, diag);
+}
+
+pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, given: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !Judged {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
@@ -2551,7 +2612,9 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
             diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; pull the checkpoint and `nuclis inspect --model` it", .{e.name});
             return error.UnsupportedFormat;
         }
-        return renderInspect(arena, out, try checkpointReport(arena, e, &remote), json, ui);
+        const report = try checkpointReport(arena, e, &remote);
+        try renderInspect(arena, out, report, json, ui);
+        return judgedOf(gpa, report);
     };
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
         try renderSelection(arena, out, .{ .repo = options.repo, .revision = &remote.revision, .card = remote.card, .selection_required = try choices(arena, remote.files) }, json, ui);
@@ -2580,7 +2643,8 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         }, diag);
         report.card = try ownCard(arena, remote.card);
         report.verdict = try safetensorsVerdict(arena, report.card);
-        return renderInspect(arena, out, report, json, ui);
+        try renderInspect(arena, out, report, json, ui);
+        return judgedOf(gpa, report);
     }
     var reader: HubRange = .{ .client = client, .request = request };
     const report = try inspectDirectory(arena, gpa, &reader, .{
@@ -2595,6 +2659,7 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     var shown = report;
     shown.card = try ownCard(arena, remote.card);
     try renderInspect(arena, out, shown, json, ui);
+    return judgedOf(gpa, shown);
 }
 
 /// Whether `text` names the Hub (a URL `inspect` reads remotely),
@@ -3978,4 +4043,21 @@ test "a pull takes each role's default draft, a named variant, or every one, gro
     const local = try catalog.localPath(arena, "/m", qwen, groups[1].files[0]);
     try std.testing.expectEqualStrings("/m/unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", local);
     try std.testing.expectEqualStrings("Qwen3.8-27B-DFlash2-Q8_0.gguf", catalog.Artifact.hubName(groups[1].files[0]));
+}
+
+test "inspect --pull refuses what does not run, before any request" {
+    var diag: config.Diagnostic = .{};
+    var discard: std.Io.Writer.Discarding = .init(&.{});
+    var environ: std.process.Environ.Map = .init(std.testing.allocator);
+    defer environ.deinit();
+    const verdicts = [_]struct { status: @FieldType(Verdict, "status"), file: []const u8, name: ?[]const u8 }{
+        .{ .status = .not_runnable, .file = "m.gguf", .name = null },
+        // A runnable verdict on a safetensors file outside the index is never one nuclis runs.
+        .{ .status = .runnable, .file = "model.safetensors", .name = null },
+    };
+    for (verdicts) |v| {
+        var seen: Judged = .{ .status = v.status, .name = v.name, .repo = "o/r", .file = v.file, .commit = "0123456789012345678901234567890123456789", .reason = "no adapter", .storage = .init(std.testing.allocator) };
+        defer seen.deinit();
+        try std.testing.expectError(error.NotRunnable, pullJudged(std.testing.allocator, std.testing.io, &environ, "/nonexistent", .{}, null, seen, false, &discard.writer, .plain, &diag));
+    }
 }
