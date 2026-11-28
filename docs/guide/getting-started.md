@@ -316,8 +316,12 @@ otherwise nothing is downloaded. It takes pull's flags (`--register`,
 `--with`, `--force`).
 
 `--metadata`, `--tensors`, and `--tensor <name>` add every metadata key,
-every tensor's encoding and shape, or one tensor's first values (one row
-read from the Hub), as `nuclis inspect` shows them for a local file.
+every tensor's encoding and shape, or one tensor's first values with its
+range, mean, RMS, and NaN, Inf, and zero counts (over a GGUF tensor's first
+row, or a safetensors tensor's first 1,048,576 values; that much is read
+from the Hub), as `nuclis inspect` shows them for a local file. The
+statistics are numbers, not a reading: a norm stored as its scale can
+average near 0 (Qwen 3's first input norm averages 0.011).
 
 ### What is on disk
 

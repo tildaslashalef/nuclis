@@ -2653,8 +2653,8 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
     request.revision = revision;
     request.filename = file.name;
     if (hf.format(file.name) == .safetensors) {
-        if (detail.metadata or detail.tensors or detail.tensor != null) {
-            diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; a safetensors header lists its tensors' dtypes, and --layout its structure", .{file.name});
+        if (detail.metadata or detail.tensors) {
+            diag.set("{s}: --metadata and --tensors read GGUF directories; a safetensors header lists its tensors' dtypes, and --layout its structure", .{file.name});
             return error.UnsupportedFormat;
         }
         var report = try inspectSafetensors(arena, gpa, client, request, selected, against, detail, .{
@@ -2769,6 +2769,9 @@ fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, reque
     report.safetensors = try inspection.safetensorsHeaders(arena, set.shards, try arena.print("{s}/{s}", .{ id.repo, id.file }), id.file);
     report.config = set.config;
     report.config_omitted = set.config_omitted;
+    if (detail.tensor) |name| {
+        report.tensor = try remoteSafetensorsPeek(arena, gpa, client, request, set.shards, name, &report, diag);
+    }
     if (wantsExtras(detail)) {
         const snapshot = &report.safetensors.?;
         const x = try extrasFor(arena, try set.inventory(arena), snapshot.tensor_bytes, detail, against, diag);
@@ -2836,6 +2839,33 @@ fn readSafetensorsSet(arena: Allocator, gpa: Allocator, client: hf.Client, reque
         } else |_| {}
     };
     return set;
+}
+
+/// `--tensor <name>` of a remote safetensors set: the named tensor's first
+/// `max_statistics_values` values (or all of it), read by range.
+fn remoteSafetensorsPeek(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, shards: []const inspection.ShardHeader, name: []const u8, report: *InspectReport, diag: *config.Diagnostic) !inspection.TensorPeek {
+    for (shards) |shard| for (shard.document.tensors) |*t| if (std.mem.eql(u8, t.name, name)) {
+        const width: u64 = t.dtype.size();
+        const count = @min(t.bytes, @as(u64, inspection.max_statistics_values) * width);
+        const start = try std.math.add(u64, shard.document.data_offset, t.offset);
+        const bytes = try arena.alloc(u8, @intCast(count));
+        var shard_request = request;
+        shard_request.filename = shard.file;
+        var filled: usize = 0;
+        while (filled < bytes.len) {
+            const chunk = try client.readRange(shard_request, start + filled, @min(bytes.len - filled, hf.max_range_bytes));
+            defer gpa.free(chunk);
+            if (chunk.len == 0) return error.UnexpectedEndOfFile;
+            const n = @min(chunk.len, bytes.len - filled);
+            @memcpy(bytes[filled..][0..n], chunk[0..n]);
+            filled += n;
+            report.requests += 1;
+        }
+        report.bytes_read += bytes.len;
+        return inspection.tensorPeek(arena, .{ .tensor = t, .bytes = bytes });
+    };
+    diag.set("no tensor named {s} (names match in full, as the header spells them; --layout lists them)", .{name});
+    return error.TensorNotFound;
 }
 
 /// Whether `detail` asks for a section built from the file's inventory.
@@ -3312,7 +3342,9 @@ fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, j
         .not_runnable => .{ .failed, "not runnable" },
     };
     try out.print("{s}{s} {s}{s}  {s}\n", .{ ui.on(status.role()), status.glyph(ui.glyphs), word, ui.off(status.role()), try kit.text.clean(arena, report.verdict.reason) });
-    const read = if (report.tensor != null) "directory and one tensor row read" else if (report.safetensors != null) "headers read" else "directory read";
+    const read = if (report.safetensors != null)
+        (if (report.tensor != null) "headers and one tensor's values read" else "headers read")
+    else if (report.tensor != null) "directory and one tensor row read" else "directory read";
     const weights = if (report.tensor != null) "" else "; no weights downloaded";
     try out.print("{s}{s}: {f} in {f}{s}{s}\n", .{ ui.on(.muted), read, kit.values.size(report.bytes_read), kit.values.count(report.requests, "request"), weights, ui.off(.muted) });
 }

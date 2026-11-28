@@ -145,11 +145,13 @@ fn slidingWindow(inv: compare.Inventory) ?u64 {
 /// This machine's memory: macOS's `hw.memsize`; null elsewhere or when the
 /// call fails.
 pub fn machineMemory() ?u64 {
-    if (builtin.os.tag != .macos) return null;
-    var value: u64 = 0;
-    var len: usize = @sizeOf(u64);
-    if (std.c.sysctlbyname("hw.memsize", &value, &len, null, 0) != 0) return null;
-    return value;
+    if (comptime builtin.os.tag == .macos) {
+        var value: u64 = 0;
+        var len: usize = @sizeOf(u64);
+        if (std.c.sysctlbyname("hw.memsize", &value, &len, null, 0) != 0) return null;
+        return value;
+    }
+    return null;
 }
 
 pub fn render(m: Memory, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui) !void {

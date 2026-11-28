@@ -245,8 +245,10 @@ pub const peek_row_bytes = 1 << 20;
 pub fn ggufPeek(arena: std.mem.Allocator, doc: inference.gguf.Document, tensor: *const inference.gguf.Tensor, row: []const u8) !TensorPeek {
     const columns: usize = @intCast(if (tensor.dimensions.len > 0) tensor.dimensions[0] else 1);
     const decoded = try arena.alloc(f32, columns);
-    const first: ?[]const f32 = if (inference.quant.row(tensor.encoding_id, row, decoded)) decoded[0..@min(columns, TensorPeek.shown)] else |_| null;
+    const ok = if (inference.quant.row(tensor.encoding_id, row, decoded)) true else |_| false;
+    const first: ?[]const f32 = if (ok) decoded[0..@min(columns, TensorPeek.shown)] else null;
     return .{
+        .statistics = if (ok) statistics(decoded, columns == tensor.elements) else null,
         .name = try arena.dupe(u8, tensor.name),
         .dtype = inference.encoding.layout(tensor.encoding_id).?.name,
         .shape = try arena.dupe(u64, tensor.dimensions),
@@ -417,6 +419,8 @@ pub const TensorPeek = struct {
     /// A GGUF tensor's first byte in the file; null for safetensors.
     offset: ?u64 = null,
     first: ?[]const f32,
+    /// Over every value decoded; null when none could be.
+    statistics: ?Statistics = null,
 
     pub const shown = 8;
 
@@ -440,19 +444,107 @@ pub const TensorPeek = struct {
             .{ .key = try std.fmt.allocPrint(arena, "First {d}", .{values.len}), .value = first.items }
         else
             .{ .key = "Values", .value = "not decoded: nuclis has no decoder for this encoding", .role = .muted });
+        if (self.statistics) |s| {
+            try fields.append(arena, .{ .key = "Over", .value = if (s.whole) try std.fmt.allocPrint(arena, "the whole tensor ({f} values)", .{v.grouped(s.count)}) else try std.fmt.allocPrint(arena, "the first {f} values", .{v.grouped(s.count)}), .role = .muted });
+            try fields.append(arena, .{ .key = "Range", .value = if (s.finite > 0) try std.fmt.allocPrint(arena, "{d:.6} to {d:.6}", .{ s.min, s.max }) else v.missing });
+            try fields.append(arena, .{ .key = "Mean", .value = try std.fmt.allocPrint(arena, "{d:.6} · RMS {d:.6} · std {d:.6}", .{ s.mean, s.rms, s.std }) });
+            try fields.append(arena, .{ .key = "Special", .value = try std.fmt.allocPrint(arena, "{d} zero · {d} NaN · {d} Inf", .{ s.zeros, s.nans, s.infs }), .role = if (s.nans + s.infs > 0) .fail else .muted });
+        }
         try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
     }
 };
 
+/// What `--tensor` measures over the decoded values: finite values only for
+/// the range and moments, NaN and Inf counted apart.
+pub const Statistics = struct {
+    /// Every value of the tensor, or only its first values (a row, or the
+    /// first `max_statistics_values`).
+    whole: bool,
+    count: u64,
+    finite: u64,
+    min: f64,
+    max: f64,
+    mean: f64,
+    rms: f64,
+    std: f64,
+    zeros: u64,
+    nans: u64,
+    infs: u64,
+};
+
+/// The most values decoded for statistics.
+pub const max_statistics_values = 1 << 20;
+
+/// No reading of what the values mean: a norm stored as its scale can have
+/// a mean near 0 (Qwen 3's first input norm averages 0.011), so whether a
+/// family stores scales or offsets stays a fact of its definition.
+pub fn statistics(values: []const f32, whole: bool) Statistics {
+    var s: Statistics = .{ .whole = whole, .count = values.len, .finite = 0, .min = 0, .max = 0, .mean = 0, .rms = 0, .std = 0, .zeros = 0, .nans = 0, .infs = 0 };
+    var sum: f64 = 0;
+    var squares: f64 = 0;
+    for (values) |x| {
+        if (std.math.isNan(x)) {
+            s.nans += 1;
+            continue;
+        }
+        if (std.math.isInf(x)) {
+            s.infs += 1;
+            continue;
+        }
+        if (x == 0) s.zeros += 1;
+        const d: f64 = x;
+        if (s.finite == 0 or d < s.min) s.min = d;
+        if (s.finite == 0 or d > s.max) s.max = d;
+        s.finite += 1;
+        sum += d;
+        squares += d * d;
+    }
+    if (s.finite > 0) {
+        const n: f64 = @floatFromInt(s.finite);
+        s.mean = sum / n;
+        s.rms = @sqrt(squares / n);
+        s.std = @sqrt(@max(0, squares / n - s.mean * s.mean));
+    }
+    return s;
+}
+
+test "statistics over finite values, with NaN, Inf, and zeros counted" {
+    const plain = statistics(&.{ 0.9, 1.1, 1.0, 1.0 }, true);
+    try std.testing.expectApproxEqAbs(@as(f64, 1.0), plain.mean, 1e-6);
+    try std.testing.expectApproxEqAbs(@as(f64, 0.0707107), plain.std, 1e-6);
+    try std.testing.expectEqual(@as(u64, 1), statistics(&.{ 0.01, -0.02, 0.0, 0.03 }, true).zeros);
+    const nan = std.math.nan(f32);
+    const odd = statistics(&.{ nan, std.math.inf(f32), -2, 2 }, false);
+    try std.testing.expectEqual(@as(u64, 1), odd.nans);
+    try std.testing.expectEqual(@as(u64, 1), odd.infs);
+    try std.testing.expectEqual(@as(u64, 2), odd.finite);
+    try std.testing.expectEqual(@as(f64, -2), odd.min);
+    try std.testing.expectEqual(@as(f64, 2), odd.rms);
+    try std.testing.expect(!odd.whole);
+    const none = statistics(&.{ nan, nan }, true);
+    try std.testing.expectEqual(@as(u64, 0), none.finite);
+    try std.testing.expectEqual(@as(f64, 0), none.mean);
+}
+
+/// Decodes at most `max_statistics_values` values; `ref.bytes` may hold
+/// only those (a remote read) or the whole tensor.
 pub fn tensorPeek(arena: std.mem.Allocator, ref: inference.safetensors.Ref) !TensorPeek {
     const t = ref.tensor;
-    const count: usize = @intCast(@min(t.elements, TensorPeek.shown));
+    const count: usize = @intCast(@min(t.elements, max_statistics_values, ref.bytes.len / @max(1, t.dtype.size())));
     const values = try arena.alloc(f32, count);
-    const first: ?[]const f32 = if (ref.decode(0, values)) values else |err| switch (err) {
+    const decoded: ?[]const f32 = if (ref.decode(0, values)) values else |err| switch (err) {
         error.UnsupportedDtype => null,
         else => return err,
     };
-    return .{ .name = t.name, .dtype = t.dtype.name(), .shape = t.shape, .elements = t.elements, .bytes = t.bytes, .first = first };
+    return .{
+        .name = t.name,
+        .dtype = t.dtype.name(),
+        .shape = t.shape,
+        .elements = t.elements,
+        .bytes = t.bytes,
+        .first = if (decoded) |d| d[0..@min(d.len, TensorPeek.shown)] else null,
+        .statistics = if (decoded) |d| statistics(d, d.len == t.elements) else null,
+    };
 }
 
 /// Allocates the shard and dtype tables in `arena`.

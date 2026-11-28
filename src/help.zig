@@ -943,49 +943,48 @@ fn serve(p: *Page) !void {
     try p.end();
 }
 fn inspect(p: *Page) !void {
-    try title(p, "nuclis inspect", "what an artifact is");
+    try title(p, "nuclis inspect", "what an artifact is, before it runs or downloads");
     try heading(p, "Usage:");
-    try code(p, "nuclis inspect [--model <name|path|url>] [--metadata] [--tensors]");
-    try code(p, "               [--tensor <name>] [--against <ref>] [--layout]");
-    try code(p, "               [--context <n,…>] [--pull] [--json]");
+    try code(p, "nuclis inspect [--model <name|path|hub-url>] [--metadata] [--tensors]");
+    try code(p, "               [--tensor <name>] [--layout] [--context <lengths>]");
+    try code(p, "               [--against <ref>] [--pull] [--json]");
 
     try heading(p, "Options:");
-    try row(p, "--model <name|path|url>", "the file to read; default engine.model; a");
-    try more(p, "safetensors file, index, or directory too; a Hub");
-    try more(p, "URL is read remotely, as `nuclis model inspect` does");
+    try row(p, "--model <ref>", "what to read: an index or registry name, a GGUF or");
+    try more(p, "safetensors path, or a Hub URL (read remotely, no");
+    try more(p, "weights); default engine.model");
     try row(p, "--metadata", "GGUF: every metadata key, its type, and its value");
-    try more(p, "(long strings cut, vocabulary arrays counted)");
-    try row(p, "--tensors", "GGUF: every tensor's encoding, shape, size, and");
-    try more(p, "offset in the file");
-    try row(p, "--tensor <name>", "one tensor's encoding or dtype, shape, and first");
-    try more(p, "values (decoded from any encoding nuclis reads)");
-    try row(p, "--against <ref>", "compare with an index name, a Hub URL, or a file:");
-    try more(p, "keys, tensors, values, shapes, and which kind of new");
-    try row(p, "--layout", "the block templates, their schedule, and each");
+    try row(p, "--tensors", "GGUF: every tensor's encoding, shape, and offset");
+    try row(p, "--tensor <name>", "one tensor: first values, range, mean, RMS, and");
+    try more(p, "NaN/Inf counts over the tensor (or its first row)");
+    try row(p, "--layout", "the block templates and their schedule, each");
     try more(p, "dimension named by the metadata it equals");
-    try row(p, "--context <n,…>", "weights and K/V cache at these context lengths");
-    try more(p, "(`max`: the declared one), against this machine's memory");
-    try row(p, "--pull", "with a Hub URL: then pull it, at the commit read,");
-    try more(p, "when the verdict is supported or runnable");
+    try row(p, "--context <lengths>", "weights plus K/V cache at these context lengths");
+    try more(p, "(comma-separated; `max` is the declared one), f16");
+    try more(p, "and q8_0, against this machine's memory");
+    try row(p, "--against <ref>", "what differs from another file (an index name, Hub");
+    try more(p, "URL, or path), and so which kind of new it is");
+    try row(p, "--pull", "with a Hub URL: then pull it at the commit read, if");
+    try more(p, "the verdict is supported or runnable");
     try row(p, "--json", "the same facts as JSON");
 
     try heading(p, "Examples:");
     try example(p, "nuclis inspect", "the configured model");
-    try example(p, "nuclis inspect --model ~/Downloads/some-model.gguf --json", "any GGUF file, for a script");
-    try example(p, "nuclis inspect --model clef-flash --tensors", "every tensor of the file");
-    try code(p, "nuclis inspect --model https://huggingface.co/Qwen/Qwen3-8B");
-    try more(p, "a Hub repository's headers and config.json, no download");
+    try example(p, "nuclis inspect --model https://huggingface.co/Qwen/Qwen3-8B", "a Hub repository");
+    try example(p, "nuclis inspect --model gemma-4-e4b-qat --layout", "its kinds of block and their order");
+    try example(p, "nuclis inspect --model new.gguf --against qwen3.8-27b", "which kind of new it is");
+    try example(p, "nuclis inspect --model qwen3.8-27b --context 32768,max", "whether it fits");
+    try example(p, "nuclis inspect --model laya --tensor temperature", "one tensor's values");
 
     try heading(p, "Notes:");
-    try plain(p, "Reads the GGUF directory only: identity, architecture, dimensions, the");
-    try plain(p, "tensor encoding histogram, and the memory a context would need. Ranges");
-    try plain(p, "and offsets are validated; weight values are not read (--tensor reads one");
-    try plain(p, "row). Little-endian GGUF");
-    try plain(p, "v3 only; an unknown tensor layout is an error rather than a guess.");
-    try plain(p, "A safetensors checkpoint gets its header, shards, and dtype histogram,");
-    try plain(p, "with the byte buffer's tiling checked. No text-generation family runs");
-    try plain(p, "one; `decide`, `speak`, and `transcribe` do. A Hub URL (blob, resolve, or");
-    try plain(p, "a repository) is inspected remotely, with the Hub's card.");
+    try plain(p, "Reads headers, never weights (--tensor reads one tensor's first values):");
+    try plain(p, "a GGUF directory, or a safetensors set's headers with the config.json");
+    try plain(p, "beside it. Ranges, offsets, and the byte buffer's tiling are checked; an");
+    try plain(p, "unknown tensor layout is an error, not a guess. A Hub URL (blob, resolve,");
+    try plain(p, "or repository) adds the Hub's card and ends with the verdict: supported,");
+    try plain(p, "runnable, or not runnable. --layout and --context come from the tensors");
+    try plain(p, "alone, without the adapter: the context figures are estimates. Text");
+    try plain(p, "generation runs GGUF; `decide`, `speak`, and `transcribe` run safetensors.");
     try p.end();
 }
 
@@ -1021,7 +1020,7 @@ fn model(p: *Page) !void {
     try code(p, "nuclis model pull <owner/repo> [--file <name>] [--revision <rev>] [--role <r>]");
     try code(p, "                  [--register <name> [--profile <p>]] [--force] [--json]");
     try code(p, "nuclis model inspect <name|hub-url> [--metadata] [--tensors] [--tensor <name>]");
-    try code(p, "                     [--against <ref>] [--layout] [--context <n,…>]");
+    try code(p, "                     [--against <ref>] [--layout] [--context <lengths>]");
     try code(p, "                     [--pull [pull's flags]] [--json]");
     try code(p, "nuclis model inspect <owner/repo> --file <name> [--revision <rev>]");
     try code(p, "                     [same flags]");
@@ -1036,8 +1035,8 @@ fn model(p: *Page) !void {
     try row(p, "pull", "fetch an index model, a registry entry, or any");
     try more(p, "artifact of a repository, verified by digest and");
     try more(p, "published atomically, with a safetensors set's files");
-    try row(p, "inspect", "a remote file's header (or a Hub URL's), no weights,");
-    try more(p, "and whether it runs: supported, runnable, or not");
+    try row(p, "inspect", "judge a Hub file from its headers, no weights: what");
+    try more(p, "it is, and supported, runnable, or not; --pull fetches it");
     try row(p, "adopt", "hash a file placed by hand, match it to the index's");
     try more(p, "pinned file of that size and digest, and write its");
     try more(p, "sidecar; an unmatched file keeps its local digest");
@@ -1062,8 +1061,8 @@ fn model(p: *Page) !void {
     try more(p, "when several; its support files come with it");
     try row(p, "--revision <rev>", "a branch, tag, or commit; default main");
     try row(p, "--role <r>", "main, mmproj, draft, or imatrix; default by content");
-    try row(p, "inspect's own", "--metadata, --tensors, --tensor, --against, --layout,");
-    try more(p, "--context, --pull: as `nuclis inspect --help` says");
+    try row(p, "inspect's own", "--metadata, --tensors, --tensor, --layout, --context,");
+    try more(p, "--against, --pull: as `nuclis inspect --help` says");
     try row(p, "--register <name>", "once verified, write the pull as a registry entry");
     try more(p, "(repo, file, commit); a companion fills the same entry");
     try row(p, "--profile <p>", "with --register: force qwen38, gemma4,");
@@ -1081,6 +1080,7 @@ fn model(p: *Page) !void {
     try code(p, "nuclis model pull convaiinnovations/laya --file model.safetensors");
     try more(p, "a safetensors set with its config and tokenizer");
     try example(p, "nuclis model inspect unsloth/Muse-Glimmer-30B-GGUF --file dflash-kquant.gguf", "will it run, before the download");
+    try example(p, "nuclis model inspect gemma-4-e4b-qat --pull", "judge, then pull at the commit read");
     try example(p, "nuclis model adopt unsloth/Qwen3.8-27B-GGUF/MTP/Qwen3.8-27B-DFlash2-Q8_0.gguf", "a copy placed by hand");
     try example(p, "nuclis model rm qwen3.8-27b --all", "the model, its projector and drafters");
 
