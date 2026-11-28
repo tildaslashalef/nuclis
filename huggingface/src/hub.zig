@@ -56,10 +56,21 @@ pub const File = struct {
     git_oid: ?[20]u8 = null,
 };
 
+/// What the Hub says a repository is, from the same model API reply as the
+/// file list; every field is absent when the repository's card omits it.
+pub const Card = struct {
+    pipeline_tag: ?[]const u8 = null,
+    library_name: ?[]const u8 = null,
+    /// `config.json`'s `architectures` and `model_type`, as the Hub indexed them.
+    architectures: []const []const u8 = &.{},
+    model_type: ?[]const u8 = null,
+};
+
 pub const Catalog = struct {
     arena: std.heap.ArenaAllocator,
     repo_id: []const u8,
     revision: [40]u8,
+    card: Card = .{},
     /// Weight files (`.gguf`, `.safetensors`): the choices a request selects from.
     files: []const File,
     /// Files a safetensors artifact may carry (see `support_extensions`).
@@ -92,6 +103,79 @@ pub fn validate(req: Request) !void {
     }
     if (req.exact and req.filename == null) return error.FilenameRequired;
     if (req.local_dir) |dir| if (dir.len == 0 or std.mem.indexOfScalar(u8, dir, 0) != null) return error.InvalidDirectory;
+}
+
+/// A Hub model reference a person pastes: the repository, and the
+/// revision and file when the URL names them.
+pub const Reference = struct {
+    repo: []const u8,
+    revision: ?[]const u8 = null,
+    file: ?[]const u8 = null,
+};
+
+/// Parses `https://huggingface.co/<owner>/<repo>[/blob|resolve|tree/<rev>[/<path>]]`
+/// (also `hf.co`, `www.`, `http://`, or no scheme), dropping any query or
+/// fragment and percent-decoding each segment into `a` (an arena: the
+/// strings are never freed one by one). Null when `text`
+/// does not name a Hub host; an error when it does but is not a model
+/// file or repository (datasets and spaces included).
+pub fn parseReference(a: Allocator, text: []const u8) !?Reference {
+    var rest = text;
+    for ([_][]const u8{ "https://", "http://" }) |scheme| {
+        if (std.ascii.startsWithIgnoreCase(rest, scheme)) {
+            rest = rest[scheme.len..];
+            break;
+        }
+    }
+    const host_end = std.mem.indexOfScalar(u8, rest, '/') orelse rest.len;
+    const host = rest[0..host_end];
+    const hosts = [_][]const u8{ "huggingface.co", "www.huggingface.co", "hf.co" };
+    for (hosts) |h| {
+        if (std.ascii.eqlIgnoreCase(host, h)) break;
+    } else return null;
+    rest = rest[host_end..];
+    if (std.mem.indexOfAny(u8, rest, "?#")) |cut| rest = rest[0..cut];
+    var parts: std.ArrayList([]const u8) = .empty;
+    var it = std.mem.splitScalar(u8, rest, '/');
+    while (it.next()) |part| if (part.len > 0) {
+        if (parts.items.len == 64) return error.InvalidReference;
+        try parts.append(a, try percentDecode(a, part));
+    };
+    const p = parts.items;
+    if (p.len < 2) return error.InvalidReference;
+    if (std.mem.eql(u8, p[0], "datasets") or std.mem.eql(u8, p[0], "spaces")) return error.NotAModelRepository;
+    const repo = try std.mem.join(a, "/", p[0..2]);
+    try validate(.{ .repo_id = repo });
+    if (p.len == 2) return .{ .repo = repo };
+    const kinds = [_][]const u8{ "blob", "resolve", "tree" };
+    const kind = for (kinds, 0..) |k, i| {
+        if (std.mem.eql(u8, p[2], k)) break i;
+    } else return error.InvalidReference;
+    if (p.len < 4) return error.InvalidReference;
+    const revision = p[3];
+    if (!validPath(revision)) return error.InvalidRevision;
+    // A tree URL names a folder, not a file.
+    if (kind == 2 or p.len == 4) return .{ .repo = repo, .revision = revision };
+    const file = try std.mem.join(a, "/", p[4..]);
+    if (!validPath(file)) return error.InvalidFilename;
+    return .{ .repo = repo, .revision = revision, .file = file };
+}
+
+fn percentDecode(a: Allocator, part: []const u8) ![]const u8 {
+    if (std.mem.indexOfScalar(u8, part, '%') == null) return part;
+    var out: std.ArrayList(u8) = .empty;
+    var i: usize = 0;
+    while (i < part.len) : (i += 1) {
+        if (part[i] != '%') {
+            try out.append(a, part[i]);
+            continue;
+        }
+        if (i + 2 >= part.len) return error.InvalidReference;
+        const byte = std.fmt.parseInt(u8, part[i + 1 .. i + 3], 16) catch return error.InvalidReference;
+        try out.append(a, byte);
+        i += 2;
+    }
+    return out.items;
 }
 
 /// URL encoding treats a revision as one component, including branches with '/'.
@@ -159,6 +243,12 @@ pub fn catalog(gpa: Allocator, io: std.Io, token: ?[]const u8, req: Request) !Ca
 pub fn parseCatalog(gpa: Allocator, repo: []const u8, bytes: []const u8) !Catalog {
     const Wire = struct {
         sha: []const u8,
+        pipeline_tag: ?[]const u8 = null,
+        library_name: ?[]const u8 = null,
+        config: ?struct {
+            architectures: ?[]const []const u8 = null,
+            model_type: ?[]const u8 = null,
+        } = null,
         siblings: []const struct {
             rfilename: []const u8,
             size: ?u64 = null,
@@ -215,7 +305,12 @@ pub fn parseCatalog(gpa: Allocator, repo: []const u8, bytes: []const u8) !Catalo
         for (list.items) |old| if (std.mem.eql(u8, old.name, f.rfilename)) return error.InvalidMetadata;
         try list.append(a, file);
     }
-    return .{ .arena = arena, .repo_id = try a.dupe(u8, repo), .revision = w.sha[0..40].*, .files = files.items, .support = support.items, .others = others.items };
+    var card: Card = .{ .pipeline_tag = w.pipeline_tag, .library_name = w.library_name };
+    if (w.config) |c| {
+        card.model_type = c.model_type;
+        if (c.architectures) |list| card.architectures = list[0..@min(list.len, 8)];
+    }
+    return .{ .arena = arena, .repo_id = try a.dupe(u8, repo), .revision = w.sha[0..40].*, .card = card, .files = files.items, .support = support.items, .others = others.items };
 }
 
 fn isSupport(name: []const u8) bool {
@@ -531,4 +626,50 @@ test "catalog owns all strings and cleans up allocation failures" {
     const bad = try std.mem.replaceOwned(u8, std.testing.allocator, catalog_fixture, "Q4.gguf", "../Q4.gguf");
     defer std.testing.allocator.free(bad);
     try std.testing.expectError(error.InvalidMetadata, parseCatalog(std.testing.allocator, "a/b", bad));
+}
+
+test "a pasted Hub URL is a repository, revision, and file" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const blob = (try parseReference(a, "https://huggingface.co/SulphurAI/Sulphur-3/blob/main/s3.safetensors")).?;
+    try std.testing.expectEqualStrings("SulphurAI/Sulphur-3", blob.repo);
+    try std.testing.expectEqualStrings("main", blob.revision.?);
+    try std.testing.expectEqualStrings("s3.safetensors", blob.file.?);
+    const nested = (try parseReference(a, "hf.co/o/r/resolve/refs%2Fpr%2F3/sub/dir/m-Q4_K_M.gguf?download=true#x")).?;
+    try std.testing.expectEqualStrings("refs/pr/3", nested.revision.?);
+    try std.testing.expectEqualStrings("sub/dir/m-Q4_K_M.gguf", nested.file.?);
+    const bare = (try parseReference(a, "HTTPS://www.HuggingFace.co/o/r/")).?;
+    try std.testing.expectEqualStrings("o/r", bare.repo);
+    try std.testing.expect(bare.revision == null and bare.file == null);
+    const tree = (try parseReference(a, "huggingface.co/o/r/tree/v1/folder")).?;
+    try std.testing.expectEqualStrings("v1", tree.revision.?);
+    try std.testing.expect(tree.file == null);
+    // Not a Hub host: the caller reads it as a name or a path.
+    try std.testing.expect(try parseReference(a, "o/r") == null);
+    try std.testing.expect(try parseReference(a, "https://example.com/o/r") == null);
+    try std.testing.expect(try parseReference(a, "./huggingface.co/o/r") == null);
+    try std.testing.expectError(error.NotAModelRepository, parseReference(a, "https://huggingface.co/datasets/o/r"));
+    try std.testing.expectError(error.InvalidReference, parseReference(a, "https://huggingface.co/o"));
+    try std.testing.expectError(error.InvalidReference, parseReference(a, "https://huggingface.co/o/r/commits/main"));
+    try std.testing.expectError(error.InvalidReference, parseReference(a, "https://huggingface.co/o/r/blob/main/a%2"));
+    try std.testing.expectError(error.InvalidFilename, parseReference(a, "https://huggingface.co/o/r/blob/main/../x.gguf"));
+    try std.testing.expectError(error.InvalidRepository, parseReference(a, "https://huggingface.co/o%2Fx/r"));
+}
+
+test "the catalog keeps the Hub's card" {
+    const reply =
+        \\{"sha":"0123456789012345678901234567890123456789","pipeline_tag":"text-generation",
+        \\"library_name":"transformers","config":{"architectures":["Qwen3ForCausalLM"],"model_type":"qwen3","extra":{"a":1}},
+        \\"siblings":[{"rfilename":"config.json","size":10,"blobId":"0123456789012345678901234567890123456789"}]}
+    ;
+    var c = try parseCatalog(std.testing.allocator, "o/r", reply);
+    defer c.deinit();
+    try std.testing.expectEqualStrings("text-generation", c.card.pipeline_tag.?);
+    try std.testing.expectEqualStrings("transformers", c.card.library_name.?);
+    try std.testing.expectEqualStrings("qwen3", c.card.model_type.?);
+    try std.testing.expectEqualStrings("Qwen3ForCausalLM", c.card.architectures[0]);
+    var bare = try parseCatalog(std.testing.allocator, "o/r", "{\"sha\":\"0123456789012345678901234567890123456789\",\"siblings\":[]}");
+    defer bare.deinit();
+    try std.testing.expect(bare.card.pipeline_tag == null and bare.card.architectures.len == 0);
 }

@@ -28,8 +28,8 @@ scripts/fixtures/gguf-inventory.py <file.gguf> \
   --against inference/src/models/fixtures/<nearest>.json
 ```
 
-`inspect` reads the remote directory (no download) and says whether every
-tensor's encoding has a kernel. `--against` prints, with the architecture
+`inspect` reads the remote directory (or safetensors headers and
+`config.json`; no download) and says if every encoding has a kernel. `--against` prints, with the architecture
 prefix and block numbers folded, the metadata keys and tensor names only
 one side has, then the values and tensor shapes that differ under a shared
 name: the E4B against the 26B-A4B is six per-layer embedding tensors on one

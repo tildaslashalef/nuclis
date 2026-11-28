@@ -945,12 +945,13 @@ fn serve(p: *Page) !void {
 fn inspect(p: *Page) !void {
     try title(p, "nuclis inspect", "what an artifact is");
     try heading(p, "Usage:");
-    try code(p, "nuclis inspect [--model <name|path>] [--metadata] [--tensors]");
+    try code(p, "nuclis inspect [--model <name|path|url>] [--metadata] [--tensors]");
     try code(p, "               [--tensor <name>] [--json]");
 
     try heading(p, "Options:");
-    try row(p, "--model <name|path>", "the file to read; default engine.model; a");
-    try more(p, "safetensors file, index, or directory too");
+    try row(p, "--model <name|path|url>", "the file to read; default engine.model; a");
+    try more(p, "safetensors file, index, or directory too; a Hub");
+    try more(p, "URL is read remotely, as `nuclis model inspect` does");
     try row(p, "--metadata", "GGUF: every metadata key, its type, and its value");
     try more(p, "(long strings cut, vocabulary arrays counted)");
     try row(p, "--tensors", "GGUF: every tensor's encoding, shape, size, and");
@@ -963,6 +964,8 @@ fn inspect(p: *Page) !void {
     try example(p, "nuclis inspect", "the configured model");
     try example(p, "nuclis inspect --model ~/Downloads/some-model.gguf --json", "any GGUF file, for a script");
     try example(p, "nuclis inspect --model clef-flash --tensors", "every tensor of the file");
+    try code(p, "nuclis inspect --model https://huggingface.co/Qwen/Qwen3-8B");
+    try more(p, "a Hub repository's headers and config.json, no download");
 
     try heading(p, "Notes:");
     try plain(p, "Reads the GGUF directory only: identity, architecture, dimensions, the");
@@ -972,7 +975,8 @@ fn inspect(p: *Page) !void {
     try plain(p, "v3 only; an unknown tensor layout is an error rather than a guess.");
     try plain(p, "A safetensors checkpoint gets its header, shards, and dtype histogram,");
     try plain(p, "with the byte buffer's tiling checked. No text-generation family runs");
-    try plain(p, "one; `decide`, `speak`, and `transcribe` do.");
+    try plain(p, "one; `decide`, `speak`, and `transcribe` do. A Hub URL (blob, resolve, or");
+    try plain(p, "a repository) is inspected remotely, with the Hub's card.");
     try p.end();
 }
 
@@ -1022,9 +1026,8 @@ fn model(p: *Page) !void {
     try row(p, "pull", "fetch an index model, a registry entry, or any");
     try more(p, "artifact of a repository, verified by digest and");
     try more(p, "published atomically, with a safetensors set's files");
-    try row(p, "inspect", "read a remote file's header (at most 64 MiB, no");
-    try more(p, "weights) and say whether it would run: supported,");
-    try more(p, "runnable, or not");
+    try row(p, "inspect", "a remote file's header (or a Hub URL's), no weights,");
+    try more(p, "and whether it runs: supported, runnable, or not");
     try row(p, "adopt", "hash a file placed by hand, match it to the index's");
     try more(p, "pinned file of that size and digest, and write its");
     try more(p, "sidecar; an unmatched file keeps its local digest");

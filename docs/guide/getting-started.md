@@ -268,11 +268,20 @@ reconstruction, SHA-256 verification, atomic publication):
 ```sh
 nuclis model inspect gemma-4-e4b-qat
 nuclis model inspect <owner/repo> --file <name> [--revision <rev>]
+nuclis model inspect https://huggingface.co/<owner>/<repo>/blob/<rev>/<file>
 ```
 
-It reads only the head of the file from the Hub, in 8 MiB windows, until
-the GGUF directory parses (a few seconds; nothing is written), prints what
-`nuclis inspect` prints for a local file, and ends with a verdict:
+A pasted Hub URL (a `blob`, `resolve`, or repository link) is the same as
+the repository, `--file`, and `--revision`, and `nuclis inspect --model
+<url>` does the same. It reads only the head of the file from the Hub, in
+8 MiB windows, until the GGUF directory parses (a few seconds; nothing is
+written), prints what `nuclis inspect` prints for a local file with the
+Hub's card (pipeline, library, `config.json` architectures), and ends with
+a verdict. A safetensors file gets every shard's header and the scalars of
+its `config.json` instead; nuclis generates text from GGUF, so its verdict
+is not runnable and says what the Hub lists it as.
+
+The verdict:
 
 - **supported**: in the catalogue with the Hub's digest, and an adapter
   binds it (a decision, embedding, or speech model: its own command runs

@@ -332,10 +332,19 @@ pub const SafetensorsSnapshot = struct {
             try std.json.Stringify.value(self, .{ .whitespace = .indent_2 }, out);
             return out.writeByte('\n');
         }
-        const v = kit.values;
         const resolved = try kit.text.clean(arena, self.resolved);
         try kit.blocks.header(out, ui, std.fs.path.basename(resolved), std.fs.path.dirname(resolved) orelse "");
+        try self.renderText(arena, out, ui, &.{});
+        try out.writeByte('\n');
+        try kit.blocks.result(out, ui, .ok, "header and byte buffer valid", "");
+        try kit.blocks.hint(out, ui, "no text-generation family runs safetensors; ", "decide, speak, transcribe", " do");
+    }
+
+    /// The facts after `lead`, then the shard and dtype tables.
+    pub fn renderText(self: SafetensorsSnapshot, arena: std.mem.Allocator, out: *std.Io.Writer, ui: kit.Ui, lead: []const kit.blocks.Field) !void {
+        const v = kit.values;
         var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        try fields.appendSlice(arena, lead);
         try fields.append(arena, .{ .key = "Safetensors", .value = try std.fmt.allocPrint(arena, "{f} · {f} · {f}", .{ v.count(self.shards.len, "shard"), v.count(self.tensor_count, "tensor"), v.count(self.metadata.len, "metadata key") }) });
         try fields.append(arena, .{ .key = "Tensors", .value = try std.fmt.allocPrint(arena, "{f} elements · {f}", .{ v.grouped(self.stored_elements), v.size(self.tensor_bytes) }) });
         for (self.metadata) |m| try fields.append(arena, .{ .key = try kit.text.clean(arena, m.key), .value = try kit.text.clean(arena, m.value), .role = .muted });
@@ -358,9 +367,6 @@ pub const SafetensorsSnapshot = struct {
             .{ .text = try std.fmt.allocPrint(arena, "{f}", .{v.size(d.bytes)}) },
         });
         try kit.table.render(out, ui, arena, 0, &.{ .{ .title = "DTYPE", .truncate = false }, .{ .title = "TENSORS", .alignment = .right }, .{ .title = "ELEMENTS", .alignment = .right, .drop = 1 }, .{ .title = "SIZE", .alignment = .right } }, dtype_rows);
-        try out.writeByte('\n');
-        try kit.blocks.result(out, ui, .ok, "header and byte buffer valid", "");
-        try kit.blocks.hint(out, ui, "no text-generation family runs safetensors; ", "decide, speak, transcribe", " do");
     }
 };
 
@@ -415,14 +421,27 @@ pub fn tensorPeek(arena: std.mem.Allocator, ref: inference.safetensors.Ref) !Ten
 
 /// Allocates the shard and dtype tables in `arena`.
 pub fn safetensorsSnapshot(arena: std.mem.Allocator, checkpoint: *const inference.safetensors.Checkpoint, path: []const u8) !SafetensorsSnapshot {
+    const shards = try arena.alloc(ShardHeader, checkpoint.shards.len);
+    for (checkpoint.shards, shards) |*shard, *s| s.* = .{ .file = std.fs.path.basename(shard.path), .document = &shard.document };
+    return safetensorsHeaders(arena, shards, path, checkpoint.path);
+}
+
+/// One shard's parsed header and the name it is shown by.
+pub const ShardHeader = struct { file: []const u8, document: *const inference.safetensors.Document };
+
+/// The snapshot of a set of parsed headers, local or read remotely; the
+/// snapshot borrows the documents' strings.
+pub fn safetensorsHeaders(arena: std.mem.Allocator, headers: []const ShardHeader, path: []const u8, resolved: []const u8) !SafetensorsSnapshot {
     const Dtype = inference.safetensors.Dtype;
     var counts: [std.enums.values(Dtype).len]SafetensorsSnapshot.DtypeCount = @splat(.{ .dtype = "" });
-    const shards = try arena.alloc(SafetensorsSnapshot.Shard, checkpoint.shards.len);
+    const shards = try arena.alloc(SafetensorsSnapshot.Shard, headers.len);
     var elements: u64 = 0;
     var bytes: u64 = 0;
-    for (checkpoint.shards, shards) |*shard, *summary| {
-        const doc = &shard.document;
-        summary.* = .{ .file = std.fs.path.basename(shard.path), .file_bytes = doc.file_bytes, .header_bytes = doc.header_bytes, .tensors = doc.tensors.len };
+    var tensor_count: usize = 0;
+    for (headers, shards) |header, *summary| {
+        const doc = header.document;
+        tensor_count += doc.tensors.len;
+        summary.* = .{ .file = header.file, .file_bytes = doc.file_bytes, .header_bytes = doc.header_bytes, .tensors = doc.tensors.len };
         for (doc.tensors) |t| {
             elements = try std.math.add(u64, elements, t.elements);
             bytes = try std.math.add(u64, bytes, t.bytes);
@@ -437,14 +456,105 @@ pub fn safetensorsSnapshot(arena: std.mem.Allocator, checkpoint: *const inferenc
     for (counts) |c| if (c.tensors > 0) try dtypes.append(arena, c);
     return .{
         .model_path = path,
-        .resolved = checkpoint.path,
-        .tensor_count = checkpoint.tensorCount(),
+        .resolved = resolved,
+        .tensor_count = tensor_count,
         .stored_elements = elements,
         .tensor_bytes = bytes,
         .shards = shards,
         .dtypes = dtypes.items,
-        .metadata = if (checkpoint.shards.len > 0) checkpoint.shards[0].document.metadata else &.{},
+        .metadata = if (headers.len > 0) headers[0].document.metadata else &.{},
     };
+}
+
+/// One `config.json` value shown by `inspect`: a scalar as written, an
+/// array of scalars inline when short, anything else by its size.
+pub const ConfigRow = struct { key: []const u8, value: []const u8 };
+
+/// The most rows `configRows` returns; the rest are counted, not shown.
+pub const max_config_rows = 64;
+
+/// A model configuration's scalars, in file order, with one level of
+/// nesting flattened (`text_config.hidden_size`). Fails on text that is not
+/// a JSON object. Every string lives in `arena`.
+pub fn configRows(arena: std.mem.Allocator, text: []const u8) !struct { rows: []const ConfigRow, omitted: usize } {
+    const root = std.json.parseFromSliceLeaky(std.json.Value, arena, text, .{ .max_value_len = text.len }) catch return error.InvalidConfig;
+    if (root != .object) return error.InvalidConfig;
+    var rows: std.ArrayList(ConfigRow) = .empty;
+    var omitted: usize = 0;
+    var it = root.object.iterator();
+    while (it.next()) |entry| {
+        if (entry.value_ptr.* == .object) {
+            var inner = entry.value_ptr.object.iterator();
+            while (inner.next()) |sub| {
+                // Two levels down is a sub-model's own detail; counted only.
+                if (sub.value_ptr.* == .object) {
+                    omitted += 1;
+                    continue;
+                }
+                if (rows.items.len == max_config_rows) {
+                    omitted += 1;
+                    continue;
+                }
+                try rows.append(arena, .{ .key = try std.fmt.allocPrint(arena, "{s}.{s}", .{ entry.key_ptr.*, sub.key_ptr.* }), .value = try configValue(arena, sub.value_ptr.*) });
+            }
+            continue;
+        }
+        if (rows.items.len == max_config_rows) {
+            omitted += 1;
+            continue;
+        }
+        try rows.append(arena, .{ .key = entry.key_ptr.*, .value = try configValue(arena, entry.value_ptr.*) });
+    }
+    return .{ .rows = rows.items, .omitted = omitted };
+}
+
+fn configValue(arena: std.mem.Allocator, value: std.json.Value) ![]const u8 {
+    return switch (value) {
+        .null => "null",
+        .bool => |b| if (b) "true" else "false",
+        .integer => |n| std.fmt.allocPrint(arena, "{d}", .{n}),
+        .float => |f| std.fmt.allocPrint(arena, "{d}", .{f}),
+        .number_string, .string => |t| t,
+        .array => |list| blk: {
+            const scalars = for (list.items) |item| {
+                if (item == .array or item == .object) break false;
+            } else true;
+            if (!scalars or list.items.len > 8) break :blk std.fmt.allocPrint(arena, "[{d} items]", .{list.items.len});
+            var text: std.ArrayList(u8) = .empty;
+            try text.append(arena, '[');
+            for (list.items, 0..) |item, i| {
+                if (i > 0) try text.appendSlice(arena, ", ");
+                try text.appendSlice(arena, try configValue(arena, item));
+            }
+            try text.append(arena, ']');
+            break :blk text.items;
+        },
+        .object => |o| std.fmt.allocPrint(arena, "{{{d} keys}}", .{o.count()}),
+    };
+}
+
+test "config rows: scalars in order, one level flattened, the rest counted" {
+    var arena = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena.deinit();
+    const a = arena.allocator();
+    const r = try configRows(a,
+        \\{"architectures":["Qwen3ForCausalLM"],"hidden_size":4096,"rope_theta":1000000.0,
+        \\"tie_word_embeddings":false,"layer_types":[1,2,3,4,5,6,7,8,9],
+        \\"text_config":{"num_hidden_layers":36,"rope_scaling":{"type":"yarn"}},"torch_dtype":"bfloat16"}
+    );
+    try std.testing.expectEqual(@as(usize, 1), r.omitted);
+    const want = [_][2][]const u8{
+        .{ "architectures", "[Qwen3ForCausalLM]" }, .{ "hidden_size", "4096" },      .{ "rope_theta", "1000000" },
+        .{ "tie_word_embeddings", "false" },        .{ "layer_types", "[9 items]" }, .{ "text_config.num_hidden_layers", "36" },
+        .{ "torch_dtype", "bfloat16" },
+    };
+    try std.testing.expectEqual(want.len, r.rows.len);
+    for (want, r.rows) |w, row| {
+        try std.testing.expectEqualStrings(w[0], row.key);
+        try std.testing.expectEqualStrings(w[1], row.value);
+    }
+    try std.testing.expectError(error.InvalidConfig, configRows(a, "[1, 2]"));
+    try std.testing.expectError(error.InvalidConfig, configRows(a, "{"));
 }
 
 /// histogram is caller-provided scratch storage. Every parsed encoding must fit;

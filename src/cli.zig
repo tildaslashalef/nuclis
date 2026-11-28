@@ -913,6 +913,9 @@ pub fn run(alloc: std.mem.Allocator, io: std.Io, environ: *const std.process.Env
         }
         return;
     }
+    // A Hub URL is read remotely, as `model inspect` reads it.
+    if (options.command == .inspect) if (options.model) |m| if (model.isHubReference(m))
+        return model.inspect(alloc, io, environ, .{ .repo = m }, options.detail, options.json, out, ui, diag);
     var loaded = try config.load(alloc, io, .cwd(), config_path, diag);
     defer loaded.deinit();
     const wanted = options.model orelse loaded.config.engine.model;

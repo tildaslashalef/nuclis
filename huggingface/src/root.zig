@@ -31,6 +31,9 @@ pub const RemoteFile = hub.File;
 pub const Format = hub.Format;
 pub const format = hub.format;
 pub const Catalog = hub.Catalog;
+pub const Card = hub.Card;
+pub const Reference = hub.Reference;
+pub const parseReference = hub.parseReference;
 pub const max_range_bytes = transfer.window_size;
 /// Which files a request would download from a catalog (null: several
 /// choices), so a host can check destinations before calling `download`.
@@ -318,12 +321,13 @@ pub const Client = struct {
     }
 
     /// Inspect up to 8 MiB at an arbitrary offset without publishing a model.
-    /// Caller owns the returned bytes. Explicit filename is required here.
+    /// Caller owns the returned bytes. Explicit filename is required here; a
+    /// support file (`config.json`) needs `request.exact`.
     pub fn readRange(c: Client, request: Request, start: u64, count: usize) ![]u8 {
         const filename = request.filename orelse return error.FilenameRequired;
         var catalog = try c.list(request);
         defer catalog.deinit();
-        for (catalog.files) |file| if (std.mem.eql(u8, file.name, filename)) {
+        for ([_][]const hub.File{ catalog.files, catalog.support }) |files| for (files) |file| if (std.mem.eql(u8, file.name, filename)) {
             var session = transfer.Session.init(c.allocator, c.io, c.token, catalog);
             defer session.deinit();
             const remote = try transfer.resolve(&session, file);

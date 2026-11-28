@@ -312,6 +312,7 @@ const SelectionReport = struct {
     schema_version: u32 = 1,
     repo: []const u8,
     revision: []const u8,
+    card: hf.Card = .{},
     selection_required: []const Choice,
     const Choice = struct { name: []const u8, size: u64 };
 };
@@ -952,6 +953,10 @@ fn renderSelection(arena: Allocator, out: *std.Io.Writer, report: SelectionRepor
         return out.writeByte('\n');
     }
     try renderHeader(arena, out, ui, null, report.repo, null, report.revision);
+    if (try cardText(arena, report.card)) |card| {
+        try kit.blocks.detail(out, ui, &.{.{ .fields = &.{.{ .key = "Hub", .value = card }} }});
+        try out.writeByte('\n');
+    }
     const columns = [_]kit.table.Column{ .{ .title = "FILE" }, .{ .title = "SIZE", .alignment = .right } };
     const rows = try arena.alloc([]const kit.table.Cell, report.selection_required.len);
     for (report.selection_required, rows) |c, *row| row.* = try arena.dupe(kit.table.Cell, &.{
@@ -2493,6 +2498,15 @@ pub const InspectReport = struct {
     directory: ?inspection.Snapshot,
     /// `--tensor <name>`: that tensor and its first values.
     tensor: ?inspection.TensorPeek = null,
+    /// What the Hub's model API says the repository is.
+    card: hf.Card = .{},
+    /// A safetensors file's headers (every shard of its set), read in place
+    /// of a GGUF directory.
+    safetensors: ?inspection.SafetensorsSnapshot = null,
+    /// The scalars of the `config.json` beside a safetensors file, and how
+    /// many values were left out; null when there is none.
+    config: ?[]const inspection.ConfigRow = null,
+    config_omitted: usize = 0,
     verdict: Verdict,
 };
 
@@ -2512,11 +2526,12 @@ const Identity = struct {
 /// Hub and needs `--file` when it holds several GGUFs), then parses the
 /// directory from the head of the file and prints what `inspect` prints
 /// for a local file, ending with the verdict.
-pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, options: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
+pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.Map, given: PullOptions, detail: inspection.Detail, json: bool, out: *std.Io.Writer, ui: kit.Ui, diag: *config.Diagnostic) !void {
     var arena_state = std.heap.ArenaAllocator.init(gpa);
     defer arena_state.deinit();
     const arena = arena_state.allocator();
-    if (options.repo.len == 0) return error.MissingRepository;
+    if (given.repo.len == 0) return error.MissingRepository;
+    const options = try fromReference(arena, given, diag);
     const client = hf.Client.init(gpa, io, environ);
     var request: hf.Request = .{ .repo_id = options.repo, .revision = options.revision orelse "main", .filename = options.file };
     const entry = catalog.find(options.repo);
@@ -2539,20 +2554,34 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         return renderInspect(arena, out, try checkpointReport(arena, e, &remote), json, ui);
     };
     const selected = (hf.select(arena, &remote, request.filename) catch |err| return hubFailure(err, options.repo, diag)) orelse {
-        try renderSelection(arena, out, .{ .repo = options.repo, .revision = &remote.revision, .selection_required = try choices(arena, remote.files) }, json, ui);
+        try renderSelection(arena, out, .{ .repo = options.repo, .revision = &remote.revision, .card = remote.card, .selection_required = try choices(arena, remote.files) }, json, ui);
         try out.flush();
         diag.set("{s} has {d} model files; pass --file <name>", .{ options.repo, remote.files.len });
         return error.SelectionRequired;
     };
     // A split file's directory is in its first shard.
     const file = selected[0];
-    if (hf.format(file.name) != .gguf) {
-        diag.set("{s}: remote inspection reads GGUF directories; pull the safetensors artifact and inspect it locally", .{file.name});
-        return error.UnsupportedFormat;
-    }
     const revision = try arena.dupe(u8, &remote.revision);
     request.revision = revision;
     request.filename = file.name;
+    if (hf.format(file.name) == .safetensors) {
+        if (detail.metadata or detail.tensors or detail.tensor != null) {
+            diag.set("{s}: --metadata, --tensors, and --tensor read GGUF directories; a safetensors header lists its tensors' dtypes", .{file.name});
+            return error.UnsupportedFormat;
+        }
+        var report = try inspectSafetensors(arena, gpa, client, request, selected, .{
+            .name = null,
+            .repo = request.repo_id,
+            .file = try arena.dupe(u8, file.name),
+            .requested_revision = options.revision orelse "main",
+            .revision = revision,
+            .size = file.size,
+            .sha256 = try hexOrNull(arena, file.sha256) orelse "",
+        }, diag);
+        report.card = try ownCard(arena, remote.card);
+        report.verdict = try safetensorsVerdict(arena, report.card);
+        return renderInspect(arena, out, report, json, ui);
+    }
     var reader: HubRange = .{ .client = client, .request = request };
     const report = try inspectDirectory(arena, gpa, &reader, .{
         .name = if (entry) |e| e.name else null,
@@ -2563,7 +2592,238 @@ pub fn inspect(gpa: Allocator, io: std.Io, environ: *const std.process.Environ.M
         .size = file.size,
         .sha256 = try arena.dupe(u8, &std.fmt.bytesToHex(file.sha256.?, .lower)),
     }, detail, diag);
-    try renderInspect(arena, out, report, json, ui);
+    var shown = report;
+    shown.card = try ownCard(arena, remote.card);
+    try renderInspect(arena, out, shown, json, ui);
+}
+
+/// Whether `text` names the Hub (a URL `inspect` reads remotely),
+/// well-formed or not: a malformed one is reported by `inspect` itself.
+pub fn isHubReference(text: []const u8) bool {
+    var buffer: [16 * 1024]u8 = undefined;
+    var fixed = std.heap.FixedBufferAllocator.init(&buffer);
+    return (hf.parseReference(fixed.allocator(), text) catch return true) != null;
+}
+
+/// `given` with a pasted Hub URL resolved into repository, file, and
+/// revision; a flag that names another file or revision conflicts.
+fn fromReference(arena: Allocator, given: PullOptions, diag: *config.Diagnostic) !PullOptions {
+    var options = given;
+    const ref = hf.parseReference(arena, given.repo) catch |err| {
+        diag.set("{s}: not a Hub model URL ({s}); give https://huggingface.co/<owner>/<repo>/blob/<revision>/<file>, owner/repo with --file, or an index name", .{ given.repo, @errorName(err) });
+        return err;
+    } orelse return options;
+    options.repo = ref.repo;
+    inline for (.{ "file", "revision" }) |field| if (@field(ref, field)) |value| {
+        if (@field(given, field)) |flag| if (!std.mem.eql(u8, flag, value)) {
+            diag.set("{s} names {s} {s}, and --{s} names {s}; give one", .{ given.repo, field, value, field, flag });
+            return error.ConflictingOptions;
+        };
+        @field(options, field) = value;
+    };
+    return options;
+}
+
+/// The card copied out of the listing, which is freed before rendering.
+fn ownCard(arena: Allocator, card: hf.Card) !hf.Card {
+    const names = try arena.alloc([]const u8, card.architectures.len);
+    for (card.architectures, names) |n, *d| d.* = try arena.dupe(u8, n);
+    return .{
+        .pipeline_tag = if (card.pipeline_tag) |t| try arena.dupe(u8, t) else null,
+        .library_name = if (card.library_name) |t| try arena.dupe(u8, t) else null,
+        .architectures = names,
+        .model_type = if (card.model_type) |t| try arena.dupe(u8, t) else null,
+    };
+}
+
+/// "text-generation · transformers · Qwen3ForCausalLM (qwen3)", or null
+/// when the card says nothing.
+fn cardText(arena: Allocator, card: hf.Card) !?[]const u8 {
+    var parts: std.ArrayList([]const u8) = .empty;
+    if (card.pipeline_tag) |t| try parts.append(arena, t);
+    if (card.library_name) |l| try parts.append(arena, l);
+    const names = try std.mem.join(arena, ", ", card.architectures);
+    if (card.model_type) |m| {
+        try parts.append(arena, if (names.len > 0) try arena.print("{s} ({s})", .{ names, m }) else m);
+    } else if (names.len > 0) try parts.append(arena, names);
+    if (parts.items.len == 0) return null;
+    return try kit.text.clean(arena, try std.mem.join(arena, " · ", parts.items));
+}
+
+/// A safetensors file outside the index: what the Hub calls it, and that
+/// the text engine runs GGUF.
+fn safetensorsVerdict(arena: Allocator, card: hf.Card) !Verdict {
+    const listed = if (card.pipeline_tag != null or card.library_name != null)
+        try arena.print(", listed by the Hub as {s}{s}{s}", .{ card.pipeline_tag orelse "", if (card.pipeline_tag != null and card.library_name != null) " for " else "", card.library_name orelse "" })
+    else
+        "";
+    const text = if (card.pipeline_tag) |t| std.mem.eql(u8, t, "text-generation") or std.mem.eql(u8, t, "image-text-to-text") else false;
+    return .{
+        .status = .not_runnable,
+        .reason = try arena.print("a safetensors checkpoint{s}; nuclis generates text from GGUF files{s}", .{ listed, if (text) ": look for a GGUF of this model" else " (`decide`, `speak`, and `transcribe` run the index's safetensors entries)" }),
+    };
+}
+
+/// The most shards of one safetensors set `model inspect` reads.
+const max_remote_shards = 64;
+/// The first read of a safetensors file: most headers fit in it.
+const safetensors_first_read = 256 * 1024;
+/// The largest `config.json` read beside a safetensors file.
+const max_remote_config_bytes = 1024 * 1024;
+
+/// Reads every shard's header of a selected safetensors set, and the
+/// `config.json` in its folder, through the Hub's range reads.
+fn inspectSafetensors(arena: Allocator, gpa: Allocator, client: hf.Client, request: hf.Request, selected: []const hf.RemoteFile, id: Identity, diag: *config.Diagnostic) !InspectReport {
+    var shards: std.ArrayList(inspection.ShardHeader) = .empty;
+    var config_file: ?hf.RemoteFile = null;
+    const folder = std.fs.path.dirname(id.file) orelse "";
+    var requests: usize = 0;
+    for (selected) |f| {
+        if (hf.format(f.name) != .safetensors) {
+            const dir = std.fs.path.dirname(f.name) orelse "";
+            if (std.mem.eql(u8, std.fs.path.basename(f.name), "config.json") and std.mem.eql(u8, dir, folder)) config_file = f;
+            continue;
+        }
+        if (shards.items.len == max_remote_shards) {
+            diag.set("{s}: more than {d} shards; pull the set and `nuclis inspect --model` it", .{ id.file, max_remote_shards });
+            return error.TooManyShards;
+        }
+        var shard_request = request;
+        shard_request.filename = f.name;
+        var reader: HubRange = .{ .client = client, .request = shard_request };
+        var counted: Counted(HubRange) = .{ .inner = &reader, .gpa = gpa };
+        const doc = try arena.create(inference.safetensors.Document);
+        doc.* = try readSafetensorsHeader(arena, &counted, f.name, f.size, diag);
+        requests += counted.requests;
+        try shards.append(arena, .{ .file = try arena.dupe(u8, f.name), .document = doc });
+    }
+    var bytes_read: u64 = 0;
+    for (shards.items) |h| bytes_read += 8 + h.document.header_bytes;
+    var report = finish(id, bytes_read, requests, null, .{ .status = .not_runnable, .reason = "" });
+    report.safetensors = try inspection.safetensorsHeaders(arena, shards.items, try arena.print("{s}/{s}", .{ id.repo, id.file }), id.file);
+    if (config_file) |c| if (c.size > 0 and c.size <= max_remote_config_bytes) {
+        var config_request = request;
+        config_request.filename = c.name;
+        config_request.exact = true;
+        const bytes = try client.readRange(config_request, 0, @intCast(c.size));
+        defer gpa.free(bytes);
+        report.requests += 1;
+        report.bytes_read += bytes.len;
+        if (inspection.configRows(arena, try arena.dupe(u8, bytes))) |rows| {
+            report.config = rows.rows;
+            report.config_omitted = rows.omitted;
+        } else |_| {}
+    };
+    return report;
+}
+
+/// Counts a range reader's requests and copies each chunk into the caller's
+/// arena-friendly form: `read` returns bytes owned by `gpa`, freed by the
+/// caller as with any reader here.
+fn Counted(comptime Inner: type) type {
+    return struct {
+        inner: *Inner,
+        gpa: Allocator,
+        requests: usize = 0,
+        fn read(self: *@This(), start: u64, count: usize) ![]u8 {
+            self.requests += 1;
+            return self.inner.read(start, count);
+        }
+    };
+}
+
+/// One safetensors header from the head of the file: a first read large
+/// enough for most headers, then the rest its length prefix names, bounded
+/// by `max_inspect_bytes`. `reader` returns bytes owned by `reader.gpa`;
+/// the document and its copy of the header live in `arena`.
+fn readSafetensorsHeader(arena: Allocator, reader: anytype, file: []const u8, size: u64, diag: *config.Diagnostic) !inference.safetensors.Document {
+    if (size < 10) {
+        diag.set("{s}: {d} bytes, shorter than any safetensors file", .{ file, size });
+        return error.InvalidSafetensors;
+    }
+    var head: std.ArrayList(u8) = .empty;
+    var want: u64 = @min(size, safetensors_first_read);
+    var sized = false;
+    while (head.items.len < want) {
+        const count: usize = @intCast(@min(hf.max_range_bytes, want - head.items.len));
+        const chunk = try reader.read(head.items.len, count);
+        defer reader.gpa.free(chunk);
+        if (chunk.len == 0) return error.UnexpectedEndOfFile;
+        try head.appendSlice(arena, chunk[0..@min(chunk.len, count)]);
+        if (!sized and head.items.len >= 8) {
+            sized = true;
+            const length = std.mem.readInt(u64, head.items[0..8], .little);
+            if (length > max_inspect_bytes - 8 or length > size - 8) {
+                diag.set("{s}: a header of {d} bytes, past the file or the {d}-byte bound", .{ file, length, max_inspect_bytes });
+                return error.DirectoryTooLarge;
+            }
+            want = 8 + length;
+        }
+    }
+    var fixed: std.Io.Reader = .fixed(head.items[0..@intCast(want)]);
+    return inference.safetensors.parse(arena, &fixed, size, .{}) catch |err| {
+        diag.set("{s}: not a safetensors header nuclis reads ({s})", .{ file, @errorName(err) });
+        return error.InvalidSafetensors;
+    };
+}
+
+test "a remote safetensors header: one read when it fits, two when it does not, bounds refused" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const header = "{\"a.weight\":{\"dtype\":\"F32\",\"shape\":[2],\"data_offsets\":[0,8]},\"__metadata__\":{\"format\":\"pt\"}}";
+    var file: std.ArrayList(u8) = .empty;
+    var len: [8]u8 = undefined;
+    std.mem.writeInt(u64, &len, header.len, .little);
+    try file.appendSlice(arena, &len);
+    try file.appendSlice(arena, header);
+    try file.appendSlice(arena, &@as([8]u8, @splat(0)));
+    var small: StubRange = .{ .gpa = std.testing.allocator, .bytes = file.items, .chunk = 1 << 20 };
+    var doc = try readSafetensorsHeader(arena, &small, "m.safetensors", file.items.len, &diag);
+    try std.testing.expectEqual(@as(usize, 1), small.requests);
+    try std.testing.expectEqual(@as(usize, 1), doc.tensors.len);
+    try std.testing.expectEqualStrings("pt", doc.metadata[0].value);
+    // Served 7 bytes at a time: the length arrives split, then the rest.
+    var trickle: StubRange = .{ .gpa = std.testing.allocator, .bytes = file.items, .chunk = 7 };
+    doc = try readSafetensorsHeader(arena, &trickle, "m.safetensors", file.items.len, &diag);
+    try std.testing.expectEqual(@as(usize, 1), doc.tensors.len);
+    // A length past the file is refused before anything else is read.
+    std.mem.writeInt(u64, file.items[0..8], 1 << 40, .little);
+    var huge: StubRange = .{ .gpa = std.testing.allocator, .bytes = file.items, .chunk = 1 << 20 };
+    try std.testing.expectError(error.DirectoryTooLarge, readSafetensorsHeader(arena, &huge, "m.safetensors", file.items.len, &diag));
+    try std.testing.expectError(error.InvalidSafetensors, readSafetensorsHeader(arena, &huge, "m.safetensors", 9, &diag));
+}
+
+test "a pasted URL fills the repository, file, and revision; a disagreeing flag conflicts" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    var diag: config.Diagnostic = .{};
+    const url = "https://huggingface.co/o/r/blob/v2/m-Q8_0.gguf";
+    const resolved = try fromReference(arena, .{ .repo = url }, &diag);
+    try std.testing.expectEqualStrings("o/r", resolved.repo);
+    try std.testing.expectEqualStrings("m-Q8_0.gguf", resolved.file.?);
+    try std.testing.expectEqualStrings("v2", resolved.revision.?);
+    const same = try fromReference(arena, .{ .repo = url, .file = "m-Q8_0.gguf" }, &diag);
+    try std.testing.expectEqualStrings("m-Q8_0.gguf", same.file.?);
+    try std.testing.expectError(error.ConflictingOptions, fromReference(arena, .{ .repo = url, .revision = "main" }, &diag));
+    const name = try fromReference(arena, .{ .repo = "qwen3.8-27b" }, &diag);
+    try std.testing.expectEqualStrings("qwen3.8-27b", name.repo);
+    try std.testing.expectError(error.NotAModelRepository, fromReference(arena, .{ .repo = "https://hf.co/spaces/o/r" }, &diag));
+}
+
+test "the card line and the safetensors verdict say what the Hub lists" {
+    var arena_state = std.heap.ArenaAllocator.init(std.testing.allocator);
+    defer arena_state.deinit();
+    const arena = arena_state.allocator();
+    const card: hf.Card = .{ .pipeline_tag = "text-generation", .library_name = "transformers", .architectures = &.{"Qwen3ForCausalLM"}, .model_type = "qwen3" };
+    try std.testing.expectEqualStrings("text-generation · transformers · Qwen3ForCausalLM (qwen3)", (try cardText(arena, card)).?);
+    try std.testing.expect(try cardText(arena, .{}) == null);
+    const text = try safetensorsVerdict(arena, card);
+    try std.testing.expect(std.mem.indexOf(u8, text.reason, "look for a GGUF") != null);
+    const video = try safetensorsVerdict(arena, .{ .library_name = "minimax-h3" });
+    try std.testing.expect(std.mem.indexOf(u8, video.reason, "listed by the Hub as minimax-h3") != null);
 }
 
 /// `inspect` of a safetensors checkpoint, from the Hub's listing at the
@@ -2758,13 +3018,25 @@ fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, j
         return out.writeByte('\n');
     }
     try renderHeader(arena, out, ui, report.name, report.repo, if (std.mem.eql(u8, report.requested_revision, report.revision)) null else report.requested_revision, report.revision);
-    const lead = [_]kit.blocks.Field{
-        .{ .key = "File", .value = try kit.text.clean(arena, report.file), .role = .id },
-        .{ .key = "SHA256", .value = report.sha256, .role = .muted },
-    };
-    if (report.directory) |directory| try directory.renderText(arena, out, ui, &lead) else try kit.blocks.detail(out, ui, &.{.{ .fields = &(lead ++ [_]kit.blocks.Field{
-        .{ .key = "Size", .value = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(report.size)}) },
-    }) }});
+    var lead: std.ArrayList(kit.blocks.Field) = .empty;
+    try lead.append(arena, .{ .key = "File", .value = try kit.text.clean(arena, report.file), .role = .id });
+    try lead.append(arena, .{ .key = "SHA256", .value = report.sha256, .role = .muted });
+    if (try cardText(arena, report.card)) |card| try lead.append(arena, .{ .key = "Hub", .value = card });
+    if (report.directory) |directory| {
+        try directory.renderText(arena, out, ui, lead.items);
+    } else if (report.safetensors) |headers| {
+        try headers.renderText(arena, out, ui, lead.items);
+    } else {
+        try lead.append(arena, .{ .key = "Size", .value = try std.fmt.allocPrint(arena, "{f}", .{kit.values.size(report.size)}) });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = lead.items }});
+    }
+    if (report.config) |rows| {
+        var fields: std.ArrayList(kit.blocks.Field) = .empty;
+        for (rows) |r| try fields.append(arena, .{ .key = try kit.text.clean(arena, r.key), .value = try kit.text.clean(arena, r.value) });
+        if (report.config_omitted > 0) try fields.append(arena, .{ .key = "…", .value = try arena.print("{d} more values (nested deeper, or past {d})", .{ report.config_omitted, inspection.max_config_rows }), .role = .muted });
+        try out.print("\n{s}config.json{s}\n", .{ ui.on(.muted), ui.off(.muted) });
+        try kit.blocks.detail(out, ui, &.{.{ .fields = fields.items }});
+    }
     if (report.tensor) |peek| {
         try out.writeByte('\n');
         try peek.render(arena, out, false, ui);
@@ -2776,7 +3048,7 @@ fn renderInspect(arena: Allocator, out: *std.Io.Writer, report: InspectReport, j
         .not_runnable => .{ .failed, "not runnable" },
     };
     try out.print("{s}{s} {s}{s}  {s}\n", .{ ui.on(status.role()), status.glyph(ui.glyphs), word, ui.off(status.role()), try kit.text.clean(arena, report.verdict.reason) });
-    const read = if (report.tensor != null) "directory and one tensor row read" else "directory read";
+    const read = if (report.tensor != null) "directory and one tensor row read" else if (report.safetensors != null) "headers read" else "directory read";
     const weights = if (report.tensor != null) "" else "; no weights downloaded";
     try out.print("{s}{s}: {f} in {f}{s}{s}\n", .{ ui.on(.muted), read, kit.values.size(report.bytes_read), kit.values.count(report.requests, "request"), weights, ui.off(.muted) });
 }
